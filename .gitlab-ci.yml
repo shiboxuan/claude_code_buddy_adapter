@@ -1,0 +1,16 @@
+stages:
+  - test
+
+variables:
+  PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+pytest:
+  stage: test
+  image: python:3.11
+  script:
+    - pip install -e ".[dev]"
+    - pytest -q
+  cache:
+    key: pip-${CI_COMMIT_REF_SLUG}
+    paths:
+      - .cache/pip

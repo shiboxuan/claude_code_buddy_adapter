@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# logs
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code local state
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
+
+# OS
+.DS_Store
+
+# local config
+config.local.toml
+config.local.json

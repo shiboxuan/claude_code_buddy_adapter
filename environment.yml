@@ -1,0 +1,12 @@
+name: claude_code_buddy_adapter
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pyserial>=3.5
+  - pip:
+      - fastapi>=0.110
+      - uvicorn>=0.27
+      - pytest>=8.0
+      - httpx>=0.25

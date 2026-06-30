@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-code-buddy-adapter"
+version = "0.1.0"
+description = "Claude Code Buddy 桌宠 adapter：聚合 Claude Code 事件并驱动 StickS3 设备显示"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "shi" }]
+dependencies = [
+    "pyserial>=3.5",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.25",
+]
+
+[project.scripts]
+buddy-adapter = "claude_code_buddy_adapter.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["claude_code_buddy_adapter*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

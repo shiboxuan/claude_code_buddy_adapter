@@ -1,92 +1,74 @@
 # claude_code_buddy_adapter
 
+Claude Code Buddy 桌宠设备的 Python adapter。聚合多个 Claude Code session 的 hooks/statusLine 事件，转换为状态机与设备展示快照，通过 USB serial 下发给 M5Stack StickS3 固件。
 
+> 设备按钮只做本地页面切换与静音，不控制 Claude Code 的执行决策。
 
-## Getting started
-
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+## 架构
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.funplus.io/testautomation/claude_code_buddy_adapter.git
-git branch -M main
-git push -uf origin main
+Claude Code ──HTTP/loopback──▶ adapter ──USB serial(JSON Lines)──▶ StickS3 firmware
 ```
 
-## Integrate with your tools
+- HTTP receiver 绑定 `127.0.0.1:8765`（仅 loopback，不暴露局域网）。
+- 事件 → normalizer → reducer/arbiter → display composer → serial 协议帧。
+- 详见 `docs/claude_code_buddy/` 下的系统设计与协议文档。
 
-- [ ] [Set up project integrations](https://gitlab.funplus.io/testautomation/claude_code_buddy_adapter/-/settings/integrations)
+## 环境要求
 
-## Collaborate with your team
+- Python 3.11
+- conda（推荐）
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Automatically merge when pipeline succeeds](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+## 安装
 
-## Test and Deploy
+```bash
+# 1. 创建 conda 环境
+conda env create -f environment.yml
+conda activate claude_code_buddy_adapter
 
-Use the built-in continuous integration in GitLab.
+# 2. 可编辑安装本包（含 dev 依赖）
+pip install -e ".[dev]"
+```
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing(SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+## 运行
 
-***
+```bash
+buddy-adapter --version
+buddy-adapter run                       # 启动 HTTP receiver + serial bridge（ADP-P7 实现）
+buddy-adapter doctor                    # 环境自检（ADP-P7 实现）
+buddy-adapter install-claude --print    # 生成 Claude Code 配置片段（ADP-P7 实现）
+buddy-adapter replay <file.jsonl>       # 回放事件流（ADP-P7 实现）
+buddy-adapter dump-state                # 输出当前状态（ADP-P7 实现）
+```
 
-# Editing this README
+## 配置
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thank you to [makeareadme.com](https://www.makeareadme.com/) for this template.
+默认配置见 `claude_code_buddy_adapter/config.py`。可通过 TOML/JSON 配置文件或环境变量覆盖：
 
-## Suggestions for a good README
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+| 字段 | 环境变量 | 默认值 |
+|---|---|---|
+| http_host | `BUDDY_HTTP_HOST` | `127.0.0.1` |
+| http_port | `BUDDY_HTTP_PORT` | `8765` |
+| serial_port | `BUDDY_SERIAL_PORT` | (自动发现) |
+| baudrate | `BUDDY_BAUDRATE` | `115200` |
+| privacy_mode | `BUDDY_PRIVACY_MODE` | `false` |
+| sound_enabled_default | `BUDDY_SOUND_ENABLED` | `true` |
+| done_ttl_ms | `BUDDY_DONE_TTL_MS` | `5000` |
+| session_ttl_ms | `BUDDY_SESSION_TTL_MS` | `300000` |
+| debug_event_log | `BUDDY_DEBUG_EVENT_LOG` | `false` |
+| message_display_capture | `BUDDY_MESSAGE_DISPLAY_CAPTURE` | `false` |
 
-## Name
-Choose a self-explaining name for your project.
+## 测试
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+```bash
+pytest
+```
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+## HTTP 框架
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+使用 **FastAPI + Uvicorn**（异步，便于 P95 < 50ms 压测与集成测试）。statusLine / hook helper 脚本读取 stdin 后 POST 到 loopback endpoint，且无论 adapter 返回什么都 `exit 0`，避免被 Claude Code 判定为 hook 失败。
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+## 技术栈
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+- Python 3.11、pyserial、FastAPI、Uvicorn
+- serial 协议版本：`ccb-serial-v1`
