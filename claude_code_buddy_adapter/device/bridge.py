@@ -81,6 +81,10 @@ class SerialBridge:
     def handshook(self) -> bool:
         return self._handshook
 
+    @property
+    def is_device_connected(self) -> bool:
+        return self._handshook and self._transport.is_open
+
     # ---- 读循环 ----
     def _read_loop(self) -> None:
         while not self._stop.is_set():
@@ -145,6 +149,16 @@ class SerialBridge:
                 sessions, device_connected=True, seq=seq, now_ms=now, alert=alert
             )
         self._send(frame)
+
+    def handle_state_change(self, prev, updated) -> None:
+        """状态变化时触发 alert 边沿 + 全量 snapshot（供 HTTP receiver 调用）。"""
+        if prev is not None and updated is not None and prev.state != updated.state:
+            alert = self._alert.on_session_change(
+                updated.session_id, prev.state, updated.state, self._seq.next()
+            )
+            if alert:
+                self._send(alert)
+        self.send_full_snapshot()
 
     # ---- 心跳（§4.3）----
     def _heartbeat_loop(self) -> None:
