@@ -69,6 +69,8 @@ class Session:
     last_command: Optional[str] = None
     plan_summary: Optional[str] = None
     error_summary: Optional[str] = None
+    reason: Optional[str] = None
+    progress: Optional[float] = None  # 0–100，来自 statusLine context_window.used_percentage
     updated_at_ms: int = 0
     attention_since_ms: Optional[int] = None
     # TTL 起算时间
@@ -152,8 +154,12 @@ def _apply_metadata(s: Session, event: ClaudeEvent) -> None:
         s.last_prompt = event.message
     if event.title:
         s.plan_summary = event.title
+    if event.reason:
+        s.reason = event.reason
     if event.error and s.state == SessionState.error and not s.error_summary:
         s.error_summary = event.error
+    if event.context_used_percentage is not None:
+        s.progress = event.context_used_percentage
 
 
 def tick(
