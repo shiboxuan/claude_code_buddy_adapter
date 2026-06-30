@@ -1,0 +1,8 @@
+{
+  "session_id": "abc123-456-789",
+  "transcript_path": "/tmp/abc.jsonl",
+  "cwd": "/home/user/century_game/claude_code_buddy_adapter",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {"command": "ls -la"}
+}

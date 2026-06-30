@@ -1,0 +1,6 @@
+{
+  "session_id": "abc123-456-789",
+  "hook_event_name": "Notification",
+  "message": "Claude needs your attention",
+  "notification_type": "attention"
+}

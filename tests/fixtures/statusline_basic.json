@@ -1,0 +1,12 @@
+{
+  "session_id": "abc123-456-789",
+  "model": {"id": "claude-opus-4-8", "display_name": "Opus 4.8"},
+  "cwd": "/home/user/century_game/claude_code_buddy_adapter",
+  "workspace": {
+    "current_dir": "/home/user/century_game/claude_code_buddy_adapter",
+    "project_dir": "/home/user/century_game",
+    "repo": {"host": "gitlab.funplus.io", "owner": "testautomation", "name": "claude_code_buddy_adapter"}
+  },
+  "cost": {"total_cost_usd": 0.42, "total_duration_ms": 12000},
+  "context_window": {"used_percentage": 35.5}
+}
