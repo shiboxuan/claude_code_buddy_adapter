@@ -78,3 +78,16 @@ def test_setup_logging_idempotent(tmp_path):
     setup_logging(cfg)
     n2 = len(app.handlers)
     assert n1 == n2  # 重复配置不累积 handler
+
+
+def test_file_log_includes_level_and_timestamp(tmp_path):
+    cfg = AdapterConfig(log_dir=str(tmp_path), debug_event_log=True)
+    setup_logging(cfg)
+    app = get_logger("app")
+    app.info("formatted line")
+    for h in app.handlers:
+        h.flush()
+    content = (tmp_path / "app.log").read_text(encoding="utf-8")
+    assert "formatted line" in content
+    assert "INFO" in content  # file handler 设了 formatter，含级别
+    assert "claude_code_buddy_adapter.app" in content  # 含 logger 名

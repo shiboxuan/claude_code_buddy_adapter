@@ -82,3 +82,9 @@ def test_unsupported_file_type(tmp_path):
     except ValueError:
         return
     raise AssertionError("expected ValueError for unsupported file type")
+
+
+def test_env_int_invalid_value_falls_back(monkeypatch):
+    monkeypatch.setenv("BUDDY_HTTP_PORT", "abc")
+    cfg = AdapterConfig.load()
+    assert cfg.http_port == 8765  # 非法值回退默认，不崩溃

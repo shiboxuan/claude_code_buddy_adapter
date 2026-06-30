@@ -57,7 +57,9 @@ def _stdout_handler() -> logging.StreamHandler:
 
 
 def _file_handler(path: Path) -> logging.FileHandler:
-    return logging.FileHandler(path, encoding="utf-8")
+    h = logging.FileHandler(path, encoding="utf-8")
+    h.setFormatter(_FMT)
+    return h
 
 
 def setup_logging(config: AdapterConfig) -> dict[str, logging.Logger]:

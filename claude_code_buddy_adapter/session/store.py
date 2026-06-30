@@ -99,7 +99,8 @@ class SessionStore:
 
     def focus(self) -> Optional[Session]:
         with self._lock:
-            return select_focus(list(self._sessions.values()))
+            f = select_focus(list(self._sessions.values()))
+            return replace(f) if f is not None else None
 
     def global_state(self, device_connected: bool) -> str:
         with self._lock:

@@ -138,6 +138,15 @@ def test_get_returns_copy_not_internal():
     assert store.get("s1").state == SessionState.working
 
 
+def test_focus_returns_copy_not_internal():
+    store = SessionStore()
+    store.apply_event(_hook("Notification", "s1"), now_ms=1000)  # attention
+    f = store.focus()
+    assert f is not None
+    f.state = SessionState.idle  # 外部修改
+    assert store.focus().state == SessionState.attention  # store 内部未受污染
+
+
 def test_active_excludes_ended():
     store = SessionStore()
     store.apply_event(_hook("PreToolUse", "s1"))
