@@ -34,11 +34,11 @@ pip install -e ".[dev]"
 
 ```bash
 buddy-adapter --version
-buddy-adapter run                       # 启动 HTTP receiver + serial bridge（ADP-P7 实现）
-buddy-adapter doctor                    # 环境自检（ADP-P7 实现）
-buddy-adapter install-claude --print    # 生成 Claude Code 配置片段（ADP-P7 实现）
-buddy-adapter replay <file.jsonl>       # 回放事件流（ADP-P7 实现）
-buddy-adapter dump-state                # 输出当前状态（ADP-P7 实现）
+buddy-adapter run                       # 启动 HTTP receiver + serial bridge（无设备自动用 fake serial）
+buddy-adapter doctor                    # 环境自检：Python / serial / Claude Code 配置 / firmware
+buddy-adapter install-claude --print    # 打印 statusLine/hooks helper 脚本与 settings.json 片段
+buddy-adapter replay <file.jsonl>       # 回放 JSONL 事件流，输出最终状态
+buddy-adapter dump-state                # 输出运行中 adapter 的 sessions/focus/counts/metrics
 ```
 
 ## 配置

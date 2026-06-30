@@ -122,6 +122,14 @@ def create_app(
         except Exception:
             return _err("internal_error", status=500)
 
+    # ---- metrics（供 dump-state / 运维）----
+    @app.get("/v1/metrics")
+    async def get_metrics():
+        try:
+            return {"ok": True, "metrics": metrics.snapshot() if metrics is not None else {}}
+        except Exception:
+            return _err("internal_error", status=500)
+
     # ---- §3.5 POST /v1/debug/replay ----
     @app.post("/v1/debug/replay")
     async def replay(request: Request):

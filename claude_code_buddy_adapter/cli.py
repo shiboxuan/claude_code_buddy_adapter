@@ -1,57 +1,56 @@
 """buddy-adapter CLI 入口。
 
-子命令：run / doctor / install-claude / replay / dump-state。
-ADP-P0 仅提供 stub（打印"未实现"并 exit 2），实际实现见 ADP-P7。
+子命令：run / doctor / install-claude / replay / dump-state（ADP-P7 实装）。
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import signal
 import sys
+import urllib.request
+from pathlib import Path
 from typing import Optional, Sequence
 
 from . import __version__
 
+ADAPTER_HOST = "127.0.0.1"
+ADAPTER_PORT = 8765
+CLAUDE_DIR = Path.home() / ".claude"
+STATUSLINE_HELPER = CLAUDE_DIR / "claude-code-buddy-statusline"
+HOOK_HELPER = CLAUDE_DIR / "claude-code-buddy-hook"
+SETTINGS_JSON = CLAUDE_DIR / "settings.json"
+
+# install-claude 注册的 hook 事件（MVP 最小集）
+HOOK_EVENTS = [
+    "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+    "Notification", "Stop", "StopFailure", "SessionEnd",
+]
+HOOK_EVENTS_WITH_MATCHER = {"PreToolUse", "PostToolUse"}
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="buddy-adapter",
-        description="Claude Code Buddy 桌宠 adapter",
+        prog="buddy-adapter", description="Claude Code Buddy 桌宠 adapter"
     )
     parser.add_argument(
         "--version", action="version", version=f"buddy-adapter {__version__}"
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
-
     sub.add_parser("run", help="启动 HTTP receiver + serial bridge")
-    sub.add_parser(
-        "doctor",
-        help="检查 Python env / serial / Claude Code 配置 / firmware 协议",
-    )
-
+    sub.add_parser("doctor", help="检查 Python env / serial / Claude Code 配置 / firmware")
     p_install = sub.add_parser(
         "install-claude", help="生成或安装 Claude Code hooks/statusLine 配置"
     )
+    p_install.add_argument("--print", action="store_true", help="只打印配置片段，不写文件")
     p_install.add_argument(
-        "--print", action="store_true", help="只打印配置片段，不写文件"
+        "--write", action="store_true", help="写入 ~/.claude/settings.json（先备份；ADP-P9 实现）"
     )
-    p_install.add_argument(
-        "--write", action="store_true", help="写入 ~/.claude/settings.json（先备份）"
-    )
-
-    p_replay = sub.add_parser("replay", help="回放 JSONL 事件流到状态机与设备")
-    p_replay.add_argument("file", nargs="?", help="JSONL 事件文件")
-
+    p_replay = sub.add_parser("replay", help="回放 JSONL 事件流到状态机")
+    p_replay.add_argument("file", help="JSONL 事件文件")
     sub.add_parser("dump-state", help="输出当前 sessions / focus / counts / metrics")
     return parser
-
-
-def _not_implemented(name: str) -> int:
-    print(
-        f"buddy-adapter: '{name}' 尚未实现（计划在 ADP-P7 完成）",
-        file=sys.stderr,
-    )
-    return 2
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -60,9 +59,226 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
-    if args.command in {"run", "doctor", "install-claude", "replay", "dump-state"}:
-        return _not_implemented(args.command)
-    parser.print_help()
+    handlers = {
+        "run": _cmd_run,
+        "doctor": _cmd_doctor,
+        "install-claude": _cmd_install_claude,
+        "replay": _cmd_replay,
+        "dump-state": _cmd_dump_state,
+    }
+    handler = handlers.get(args.command)
+    if handler is None:
+        parser.print_help()
+        return 0
+    return handler(args)
+
+
+# ---- run ----
+def _select_transport(config):
+    from .device.discovery import SerialDiscovery
+    from .device.fake_transport import FakeSerialTransport
+    from .device.transport import SerialTransport
+
+    if config.serial_port:
+        return SerialTransport(config.serial_port, config.baudrate)
+    discovered = SerialDiscovery().find()
+    if discovered:
+        return SerialTransport(discovered, config.baudrate)
+    return FakeSerialTransport()  # 无设备用 fake
+
+
+def _build_runtime(config):
+    from .device.bridge import SerialBridge
+    from .metrics import METRICS
+    from .receiver.http_server import create_app
+    from .session.snapshot import DisplayComposer
+    from .session.store import SessionStore
+
+    store = SessionStore(
+        done_ttl_ms=config.done_ttl_ms, session_ttl_ms=config.session_ttl_ms
+    )
+    composer = DisplayComposer(config)
+    metrics = METRICS
+    transport = _select_transport(config)
+    bridge = SerialBridge(transport, store, composer, config, metrics=metrics)
+    app = create_app(store, composer, config, bridge=bridge, metrics=metrics)
+    return store, composer, bridge, app
+
+
+def _cmd_run(args) -> int:
+    import uvicorn
+
+    from .config import AdapterConfig
+    from .logging_setup import setup_logging
+
+    config = AdapterConfig.load()
+    setup_logging(config)
+    _, _, bridge, app = _build_runtime(config)
+    bridge.start()
+    try:
+        uvicorn.run(
+            app, host=config.http_host, port=config.http_port, log_level="warning"
+        )
+    except KeyboardInterrupt:
+        pass
+    finally:
+        bridge.stop()
+    return 0
+
+
+# ---- doctor ----
+def _check_claude_settings() -> bool:
+    if not SETTINGS_JSON.exists():
+        return False
+    try:
+        data = json.loads(SETTINGS_JSON.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return "claude-code-buddy" in json.dumps(data)
+
+
+def _cmd_doctor(args) -> int:
+    checks: list[tuple[str, str, str]] = []
+
+    py_ok = sys.version_info >= (3, 11)
+    checks.append(("python env", "PASS" if py_ok else "FAIL", f"Python {sys.version.split()[0]}"))
+
+    try:
+        from .device.discovery import SerialDiscovery
+
+        port = SerialDiscovery().find()
+        checks.append(("serial device", "PASS" if port else "FAIL", port or "未发现 StickS3"))
+    except Exception as e:  # noqa: BLE001
+        checks.append(("serial device", "FAIL", str(e)))
+
+    settings_ok = _check_claude_settings()
+    checks.append((
+        "claude settings",
+        "PASS" if settings_ok else "FAIL",
+        f"{SETTINGS_JSON} 含 buddy 配置" if settings_ok else f"{SETTINGS_JSON} 未含 buddy 配置",
+    ))
+
+    checks.append(("firmware protocol", "SKIP", "无设备在线或留待真机联调（ADP-P9）"))
+
+    for name, status, detail in checks:
+        print(f"[{status}] {name}: {detail}")
+    return 0 if all(s in ("PASS", "SKIP") for _, s, _ in checks) else 1
+
+
+# ---- install-claude ----
+def _statusline_helper_script() -> str:
+    return (
+        "#!/usr/bin/env bash\n"
+        "# claude-code-buddy-statusline: 读 stdin → POST adapter → exit 0\n"
+        "payload=$(cat)\n"
+        f'curl -s -m 2 -o /dev/null -X POST -H "Content-Type: application/json" \\\n'
+        f'  -d "$payload" http://{ADAPTER_HOST}:{ADAPTER_PORT}/v1/claude/statusline || true\n'
+        "exit 0\n"
+    )
+
+
+def _hook_helper_script() -> str:
+    return (
+        "#!/usr/bin/env bash\n"
+        "# claude-code-buddy-hook: 读 stdin → POST adapter → exit 0\n"
+        "payload=$(cat)\n"
+        f'curl -s -m 2 -o /dev/null -X POST -H "Content-Type: application/json" \\\n'
+        f'  -d "$payload" http://{ADAPTER_HOST}:{ADAPTER_PORT}/v1/claude/hook || true\n'
+        "exit 0\n"
+    )
+
+
+def _settings_fragment() -> dict:
+    hooks: dict[str, list] = {}
+    for ev in HOOK_EVENTS:
+        entry = {"hooks": [{"type": "command", "command": str(HOOK_HELPER)}]}
+        if ev in HOOK_EVENTS_WITH_MATCHER:
+            entry["matcher"] = "*"
+        hooks[ev] = [entry]
+    return {
+        "statusLine": {
+            "type": "command",
+            "command": str(STATUSLINE_HELPER),
+            "refreshInterval": 2,
+        },
+        "hooks": hooks,
+    }
+
+
+def _cmd_install_claude(args) -> int:
+    if args.write:
+        print(
+            "install-claude --write 计划在 ADP-P9 实现；本期请用 --print 手动合并。",
+            file=sys.stderr,
+        )
+        return 2
+    print("# === ~/.claude/claude-code-buddy-statusline ===")
+    print(_statusline_helper_script(), end="")
+    print("# === ~/.claude/claude-code-buddy-hook ===")
+    print(_hook_helper_script(), end="")
+    print("# === ~/.claude/settings.json 片段（手动合并） ===")
+    print(json.dumps(_settings_fragment(), indent=2, ensure_ascii=False))
+    return 0
+
+
+# ---- replay ----
+def _cmd_replay(args) -> int:
+    from .claude.normalizer import normalize
+    from .session.store import SessionStore
+
+    path = Path(args.file)
+    if not path.exists():
+        print(f"replay: 文件不存在 {path}", file=sys.stderr)
+        return 2
+    store = SessionStore()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        event = obj.get("event", obj) if isinstance(obj, dict) else {}
+        source = event.get("source", "hook")
+        raw = event.get("raw") if isinstance(event.get("raw"), dict) else {}
+        if event.get("session_id"):
+            raw = {**raw, "session_id": event["session_id"]}
+        if event.get("hook_event_name"):
+            raw = {**raw, "hook_event_name": event["hook_event_name"]}
+        ev = normalize(raw, source, received_at_ms=event.get("received_at_ms"))
+        store.apply_event(ev)
+    focus = store.focus()
+    state = {
+        "global_state": store.global_state(device_connected=False),
+        "focus_session_id": focus.session_id if focus else None,
+        "sessions": [
+            {"session_id": s.session_id, "state": s.state.value,
+             "repo": s.repo_name, "updated_at_ms": s.updated_at_ms}
+            for s in store.active()
+        ],
+        "counts": store.counts(),
+    }
+    print(json.dumps(state, indent=2, ensure_ascii=False))
+    return 0
+
+
+# ---- dump-state ----
+def _http_get(url: str):
+    with urllib.request.urlopen(url, timeout=2) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def _cmd_dump_state(args) -> int:
+    base = f"http://{ADAPTER_HOST}:{ADAPTER_PORT}"
+    try:
+        state = _http_get(f"{base}/v1/state")
+        metrics = _http_get(f"{base}/v1/metrics").get("metrics", {})
+    except Exception as e:  # noqa: BLE001
+        print(f"dump-state: 无法连接 adapter ({e})", file=sys.stderr)
+        return 1
+    out = {**state, "metrics": metrics}
+    print(json.dumps(out, indent=2, ensure_ascii=False))
     return 0
 
 
