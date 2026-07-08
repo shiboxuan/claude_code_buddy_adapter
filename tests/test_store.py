@@ -56,10 +56,10 @@ def test_counts_and_focus_attention_priority():
     store = SessionStore()
     store.apply_event(_hook("PreToolUse", "s1"), now_ms=1000)
     store.apply_event(_hook("Notification", "s2"), now_ms=2000)
-    c = store.counts()
+    c = store.counts(now_ms=2000)
     assert c["working"] == 1
     assert c["attention"] == 1
-    assert store.focus().session_id == "s2"  # attention 优先
+    assert store.focus(now_ms=2000).session_id == "s2"  # attention 优先
 
 
 def test_global_state_aggregation():
@@ -86,7 +86,24 @@ def test_cleanup_within_ttl_stays():
     store = SessionStore(done_ttl_ms=5000)
     store.apply_event(_hook("Stop", "s1"), now_ms=1000)
     store.cleanup(now_ms=4000)  # 3000 < 5000
-    assert store.get("s1").state == SessionState.done_recent
+    assert store.get("s1", now_ms=4000).state == SessionState.done_recent
+
+
+def test_query_downgrades_done_recent_without_new_event():
+    """A: 查询路径惰性 tick--done_recent 无新事件也应按 TTL 降级。"""
+    store = SessionStore(done_ttl_ms=5000)
+    store.apply_event(_hook("Stop", "s1"), now_ms=1000)  # done_recent at 1000
+    assert store.get("s1", now_ms=4000).state == SessionState.done_recent  # 未超时
+    assert store.get("s1", now_ms=7000).state == SessionState.idle  # 6000 >= 5000 降级
+
+
+def test_query_downgrades_attention_stale():
+    """A: attention 超 session_ttl_ms 无新事件应降级 idle（BR-007/BR-008）。"""
+    store = SessionStore(session_ttl_ms=300_000)
+    store.apply_event(_hook("Notification", "s1"), now_ms=1000)  # attention at 1000
+    assert store.global_state(True, now_ms=200_000) == "attention"  # 未超时
+    assert store.global_state(True, now_ms=400_000) == "idle"  # 399000 >= 300000 降级
+    assert store.get("s1", now_ms=400_000).state == SessionState.idle
 
 
 def test_thread_safety_concurrent_apply():
@@ -141,10 +158,10 @@ def test_get_returns_copy_not_internal():
 def test_focus_returns_copy_not_internal():
     store = SessionStore()
     store.apply_event(_hook("Notification", "s1"), now_ms=1000)  # attention
-    f = store.focus()
+    f = store.focus(now_ms=1000)
     assert f is not None
     f.state = SessionState.idle  # 外部修改
-    assert store.focus().state == SessionState.attention  # store 内部未受污染
+    assert store.focus(now_ms=1000).state == SessionState.attention  # store 内部未受污染
 
 
 def test_active_excludes_ended():

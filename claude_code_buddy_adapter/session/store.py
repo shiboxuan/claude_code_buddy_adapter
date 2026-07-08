@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional
@@ -32,8 +33,25 @@ class SessionStore:
         self._debug_jsonl = debug_jsonl
 
     # ---- 增删改查 ----
-    def get(self, session_id: str) -> Optional[Session]:
+    def _now_ms(self) -> int:
+        return int(time.time() * 1000)
+
+    def _refresh_locked(self, now_ms: int) -> list[Session]:
+        """惰性 tick 全部 session 并写回（状态变化时），返回当前 session 列表。调用方须持锁。
+
+        查询路径先调此方法，保证 done_recent/attention/error 在无新事件时也能按 TTL 降级
+        （BR-007/BR-008）。
+        """
+        for sid in list(self._sessions.keys()):
+            s = self._sessions[sid]
+            ticked = tick(s, now_ms, self._done_ttl_ms, self._session_ttl_ms)
+            if ticked.state != s.state:
+                self._sessions[sid] = ticked
+        return list(self._sessions.values())
+
+    def get(self, session_id: str, now_ms: Optional[int] = None) -> Optional[Session]:
         with self._lock:
+            self._refresh_locked(now_ms if now_ms is not None else self._now_ms())
             s = self._sessions.get(session_id)
             return replace(s) if s is not None else None
 
@@ -70,13 +88,15 @@ class SessionStore:
             self._archived[session_id] = s
 
     # ---- 查询 ----
-    def active(self) -> list[Session]:
+    def active(self, now_ms: Optional[int] = None) -> list[Session]:
         with self._lock:
-            return [replace(s) for s in self._sessions.values() if s.state != SessionState.ended]
+            sessions = self._refresh_locked(now_ms if now_ms is not None else self._now_ms())
+            return [replace(s) for s in sessions if s.state != SessionState.ended]
 
-    def all(self) -> list[Session]:
+    def all(self, now_ms: Optional[int] = None) -> list[Session]:
         with self._lock:
-            return [replace(s) for s in self._sessions.values()]
+            sessions = self._refresh_locked(now_ms if now_ms is not None else self._now_ms())
+            return [replace(s) for s in sessions]
 
     def cleanup(self, now_ms: int, ttl_ms: Optional[int] = None) -> int:
         """惰性 tick 全部 session 并归档 ended，返回归档数。"""
@@ -93,22 +113,25 @@ class SessionStore:
                     removed += 1
         return removed
 
-    def counts(self) -> dict[str, int]:
+    def counts(self, now_ms: Optional[int] = None) -> dict[str, int]:
         with self._lock:
-            return compute_counts(list(self._sessions.values()))
+            sessions = self._refresh_locked(now_ms if now_ms is not None else self._now_ms())
+            return compute_counts(sessions)
 
-    def focus(self) -> Optional[Session]:
+    def focus(self, now_ms: Optional[int] = None) -> Optional[Session]:
         with self._lock:
-            f = select_focus(list(self._sessions.values()))
+            sessions = self._refresh_locked(now_ms if now_ms is not None else self._now_ms())
+            f = select_focus(sessions)
             return replace(f) if f is not None else None
 
-    def global_state(self, device_connected: bool) -> str:
+    def global_state(self, device_connected: bool, now_ms: Optional[int] = None) -> str:
         with self._lock:
-            return compute_global_state(list(self._sessions.values()), device_connected)
+            sessions = self._refresh_locked(now_ms if now_ms is not None else self._now_ms())
+            return compute_global_state(sessions, device_connected)
 
-    def snapshot(self, device_connected: bool) -> dict:
+    def snapshot(self, device_connected: bool, now_ms: Optional[int] = None) -> dict:
         with self._lock:
-            sessions = list(self._sessions.values())
+            sessions = self._refresh_locked(now_ms if now_ms is not None else self._now_ms())
             f = select_focus(sessions)
             return {
                 "device_connected": device_connected,

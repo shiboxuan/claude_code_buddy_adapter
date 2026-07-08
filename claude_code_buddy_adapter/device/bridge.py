@@ -37,6 +37,7 @@ class SerialBridge:
         reconnect_interval: float = 5.0,
         heartbeat_interval: float = 10.0,
         poll_interval: float = 0.05,
+        cleanup_interval: float = 1.0,
     ) -> None:
         self._transport = transport
         self._store = store
@@ -48,10 +49,12 @@ class SerialBridge:
         self._reconnect_interval = reconnect_interval
         self._heartbeat_interval = heartbeat_interval
         self._poll_interval = poll_interval
+        self._cleanup_interval = cleanup_interval
         self._stop = threading.Event()
         self._lock = threading.RLock()  # 可重入：_handle_hello 内调 send_full_snapshot
         self._read_thread: Optional[threading.Thread] = None
         self._hb_thread: Optional[threading.Thread] = None
+        self._cleanup_thread: Optional[threading.Thread] = None
         self._handshook = False
 
     # ---- 生命周期 ----
@@ -65,6 +68,9 @@ class SerialBridge:
         self._hb_thread = threading.Thread(
             target=self._heartbeat_loop, daemon=True, name="buddy-serial-hb")
         self._hb_thread.start()
+        self._cleanup_thread = threading.Thread(
+            target=self._cleanup_loop, daemon=True, name="buddy-serial-cleanup")
+        self._cleanup_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -76,6 +82,8 @@ class SerialBridge:
             self._read_thread.join(timeout=2)
         if self._hb_thread is not None:
             self._hb_thread.join(timeout=2)
+        if self._cleanup_thread is not None:
+            self._cleanup_thread.join(timeout=2)
 
     @property
     def handshook(self) -> bool:
@@ -168,6 +176,21 @@ class SerialBridge:
             with self._lock:
                 if self._handshook and self._transport.is_open:
                     self._send(make_ping(int(time.time() * 1000)))
+
+    # ---- 后台 TTL 降级（BR-007/BR-008）----
+    def _cleanup_loop(self) -> None:
+        """周期 tick 全部 session（done_recent/attention/error 超时降级 + ended 归档）。
+
+        查询路径已惰性 tick（store._refresh_locked），此线程保证 store 在无查询/无新事件时
+        也周期性干净，并归档 ended session。
+        """
+        while not self._stop.is_set():
+            if self._stop.wait(self._cleanup_interval):
+                break
+            try:
+                self._store.cleanup(int(time.time() * 1000))
+            except Exception:
+                pass
 
     # ---- 发送 ----
     def _send(self, frame: dict) -> None:

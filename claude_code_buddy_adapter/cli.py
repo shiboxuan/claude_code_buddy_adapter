@@ -231,6 +231,7 @@ def _cmd_replay(args) -> int:
         print(f"replay: 文件不存在 {path}", file=sys.stderr)
         return 2
     store = SessionStore()
+    last_ms = 0
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -248,16 +249,19 @@ def _cmd_replay(args) -> int:
             raw = {**raw, "hook_event_name": event["hook_event_name"]}
         ev = normalize(raw, source, received_at_ms=event.get("received_at_ms"))
         store.apply_event(ev)
-    focus = store.focus()
+        if ev.received_at_ms is not None:
+            last_ms = max(last_ms, ev.received_at_ms)
+    # 用回放流最后事件时间 dump，复现回放时刻状态（避免真实时间把 done_recent 误降级）
+    focus = store.focus(now_ms=last_ms)
     state = {
-        "global_state": store.global_state(device_connected=False),
+        "global_state": store.global_state(device_connected=False, now_ms=last_ms),
         "focus_session_id": focus.session_id if focus else None,
         "sessions": [
             {"session_id": s.session_id, "state": s.state.value,
              "repo": s.repo_name, "updated_at_ms": s.updated_at_ms}
-            for s in store.active()
+            for s in store.active(now_ms=last_ms)
         ],
-        "counts": store.counts(),
+        "counts": store.counts(now_ms=last_ms),
     }
     print(json.dumps(state, indent=2, ensure_ascii=False))
     return 0
