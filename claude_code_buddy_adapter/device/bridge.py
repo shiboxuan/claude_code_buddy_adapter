@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from .. import __version__ as ADAPTER_VERSION
 from .alert import AlertTracker
@@ -34,10 +34,11 @@ class SerialBridge:
         config,
         metrics=None,
         alert_tracker: Optional[AlertTracker] = None,
-        reconnect_interval: float = 5.0,
+        reconnect_interval: float = 2.0,
         heartbeat_interval: float = 10.0,
         poll_interval: float = 0.05,
         cleanup_interval: float = 1.0,
+        transport_factory: Optional[Callable[[], object]] = None,
     ) -> None:
         self._transport = transport
         self._store = store
@@ -50,11 +51,13 @@ class SerialBridge:
         self._heartbeat_interval = heartbeat_interval
         self._poll_interval = poll_interval
         self._cleanup_interval = cleanup_interval
+        self._transport_factory = transport_factory  # 返回已 open 的 transport，无设备返 None
         self._stop = threading.Event()
         self._lock = threading.RLock()  # 可重入：_handle_hello 内调 send_full_snapshot
         self._read_thread: Optional[threading.Thread] = None
         self._hb_thread: Optional[threading.Thread] = None
         self._cleanup_thread: Optional[threading.Thread] = None
+        self._reconnect_thread: Optional[threading.Thread] = None
         self._handshook = False
 
     # ---- 生命周期 ----
@@ -71,6 +74,9 @@ class SerialBridge:
         self._cleanup_thread = threading.Thread(
             target=self._cleanup_loop, daemon=True, name="buddy-serial-cleanup")
         self._cleanup_thread.start()
+        self._reconnect_thread = threading.Thread(
+            target=self._reconnect_loop, daemon=True, name="buddy-serial-reconnect")
+        self._reconnect_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -84,6 +90,8 @@ class SerialBridge:
             self._hb_thread.join(timeout=2)
         if self._cleanup_thread is not None:
             self._cleanup_thread.join(timeout=2)
+        if self._reconnect_thread is not None:
+            self._reconnect_thread.join(timeout=2)
 
     @property
     def handshook(self) -> bool:
@@ -131,6 +139,7 @@ class SerialBridge:
         with self._lock:
             self._handshook = False
             self._alert.reset()  # 重连后 connected 可再发
+            self._set_gauge("device_connected", 0)
 
     # ---- 握手（§4.4）----
     def _handle_hello(self, frame: dict) -> None:
@@ -139,6 +148,7 @@ class SerialBridge:
             self._send(make_hello_ack(ADAPTER_VERSION, self._seq.next(), ok))
             if ok:
                 self._handshook = True
+                self._set_gauge("device_connected", 1)
                 alert = self._alert.on_connect(self._seq.next())
                 self.send_full_snapshot(alert=alert)
                 self._send(make_config(
@@ -192,6 +202,39 @@ class SerialBridge:
             except Exception:
                 pass
 
+    # ---- 断线重连（§6 断线恢复 / INT-5）----
+    def _reconnect_loop(self) -> None:
+        """断开后周期重新 discover/open 端口。
+
+        断开检测在 transport 层（write/read 失败 -> is_open=False）；本循环检测到断开后
+        调 transport_factory 重建已 open 的 transport 并替换，read_loop 下一轮自动切到新
+        transport 读取 firmware 主动重发的 hello，由 _handle_hello 重新握手 + 发全量 snapshot。
+        无 transport_factory（fake/测试场景）时不自动重连。
+        """
+        while not self._stop.is_set():
+            if self._stop.wait(self._reconnect_interval):
+                break
+            if self._transport_factory is None:
+                continue
+            with self._lock:
+                if self._transport.is_open:
+                    continue  # 端口仍在（等 hello 或已连），不重连
+            try:
+                new_transport = self._transport_factory()
+            except Exception:
+                new_transport = None
+            if new_transport is None:
+                continue  # 端口未出现，下轮再试
+            with self._lock:
+                old = self._transport
+                self._transport = new_transport
+            if old is not new_transport:
+                try:
+                    old.close()  # 旧的通常已断开（_serial=None），此处 no-op；非同一对象才关
+                except Exception:
+                    pass
+            self._inc("serial_reconnect_total")
+
     # ---- 发送 ----
     def _send(self, frame: dict) -> None:
         try:
@@ -205,6 +248,13 @@ class SerialBridge:
         if self._metrics is not None:
             try:
                 self._metrics.inc(name)
+            except KeyError:
+                pass
+
+    def _set_gauge(self, name: str, value: int | float) -> None:
+        if self._metrics is not None:
+            try:
+                self._metrics.set(name, value)
             except KeyError:
                 pass
 

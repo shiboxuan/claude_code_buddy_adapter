@@ -74,21 +74,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 # ---- run ----
-def _select_transport(config):
+def _make_transport_factory(config):
+    """返回 callable：重新 discover/open 端口，返回已 open 的 transport，无设备返 None。
+
+    真机断线重连时由 bridge._reconnect_loop 周期调用（INT-5）。
+    """
     from .device.discovery import SerialDiscovery
-    from .device.fake_transport import FakeSerialTransport
     from .device.transport import SerialTransport
 
-    if config.serial_port:
-        return SerialTransport(config.serial_port, config.baudrate)
-    discovered = SerialDiscovery().find()
-    if discovered:
-        return SerialTransport(discovered, config.baudrate)
-    return FakeSerialTransport()  # 无设备用 fake
+    def factory():
+        port = config.serial_port or SerialDiscovery().find()
+        if not port:
+            return None
+        transport = SerialTransport(port, config.baudrate)
+        transport.open()
+        return transport
+
+    return factory
 
 
 def _build_runtime(config):
     from .device.bridge import SerialBridge
+    from .device.fake_transport import FakeSerialTransport
     from .metrics import METRICS
     from .receiver.http_server import create_app
     from .session.snapshot import DisplayComposer
@@ -99,8 +106,21 @@ def _build_runtime(config):
     )
     composer = DisplayComposer(config)
     metrics = METRICS
-    transport = _select_transport(config)
-    bridge = SerialBridge(transport, store, composer, config, metrics=metrics)
+    factory = _make_transport_factory(config)
+    try:
+        transport = factory()
+    except Exception:
+        transport = None
+    if transport is None:
+        # 无设备：fallback fake，不启用自动重连（ADP-P5 行为）
+        transport = FakeSerialTransport()
+        transport_factory = None
+    else:
+        transport_factory = factory
+    bridge = SerialBridge(
+        transport, store, composer, config, metrics=metrics,
+        transport_factory=transport_factory,
+    )
     app = create_app(store, composer, config, bridge=bridge, metrics=metrics)
     return store, composer, bridge, app
 

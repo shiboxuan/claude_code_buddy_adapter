@@ -35,7 +35,12 @@ class Transport(Protocol):
 
 
 class SerialTransport:
-    """真实 pyserial 实现。按行读写 JSON Lines（\\n 结束）。"""
+    """真实 pyserial 实现。按行读写 JSON Lines（\\n 结束）。
+
+    断线检测：write/read 抛 OSError（USB 物理断开等）时关闭底层 serial 并置空，
+    使 is_open 反映真实断开状态，供 bridge 触发重连（§6 断线恢复 / INT-5）。
+    pyserial SerialException 继承自 OSError，故 except OSError 已覆盖。
+    """
 
     def __init__(self, port: str, baudrate: int = 115200, timeout: float = 1.0) -> None:
         self._port = port
@@ -46,6 +51,7 @@ class SerialTransport:
     def open(self) -> None:
         import serial
 
+        self._close_serial()  # 先清理可能残留的旧连接
         self._serial = serial.Serial(
             self._port, self._baudrate, timeout=self._timeout
         )
@@ -59,7 +65,12 @@ class SerialTransport:
         if self._serial is None:
             raise ConnectionError("transport not open")
         data = serialize(frame)
-        self._serial.write(data)
+        try:
+            self._serial.write(data)
+        except OSError:
+            # USB 断开等：关闭底层 serial 使 is_open=False，触发 bridge 重连；再上抛
+            self._close_serial()
+            raise
 
     def read_line(self) -> Optional[str]:
         if self._serial is None:
@@ -67,14 +78,22 @@ class SerialTransport:
         try:
             line = self._serial.readline()
         except OSError:
+            # USB 断开：标记断开（is_open=False）
+            self._close_serial()
             return None
         if not line:
-            return None
+            return None  # timeout 返回空 bytes，不算断开
         return line.decode("utf-8", errors="replace")
 
-    def close(self) -> None:
+    def _close_serial(self) -> None:
+        """关闭并清空底层 serial（忽略已失效时的异常）。"""
         if self._serial is not None:
             try:
                 self._serial.close()
+            except Exception:
+                pass
             finally:
                 self._serial = None
+
+    def close(self) -> None:
+        self._close_serial()
