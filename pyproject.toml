@@ -25,6 +25,7 @@ dev = [
 build = [
     "nuitka>=2.4",
     "zstandard>=0.22",
+    "sniffio>=1.3",   # anyio 惰性 import；build.sh --include-package=sniffio 需 build 环境已装
 ]
 
 [project.scripts]

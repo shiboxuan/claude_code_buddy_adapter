@@ -115,6 +115,10 @@ if [[ "$MODE" == "onefile" ]]; then
 else
   BIN="$OUTPUT_DIR/$OUTPUT_NAME.dist/$OUTPUT_NAME"
 fi
+# Windows 可执行文件需要 .exe 扩展名（macOS/Linux 不加）
+if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* || "$(uname -s)" == CYGWIN* ]]; then
+  BIN="${BIN}.exe"
+fi
 echo
 if [[ -f "$BIN" ]]; then
   echo "==> 构建完成"
