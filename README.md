@@ -64,6 +64,37 @@ buddy-adapter dump-state                # 输出运行中 adapter 的 sessions/f
 pytest
 ```
 
+## 打包分发
+
+用 Nuitka 打成单文件可执行，方便分发给未装 Python/conda 的用户。产物等价于 `buddy-adapter` 命令：无参默认拉起 adapter，也可透传 `doctor` / `install-claude` / `replay` / `dump-state`。
+
+```bash
+# 1. 安装打包依赖（一次性）
+pip install -e ".[build]"
+
+# 2. 打包（默认 onefile 单文件，产出 dist/buddy-adapter）
+./scripts/build.sh
+
+# 或产出目录形态（启动更快，但分发是一组文件）
+./scripts/build.sh --mode standalone
+
+# 3. 验证
+./dist/buddy-adapter --version
+```
+
+**架构说明（重要）**：Nuitka 不支持交叉编译，本脚本做的是**本机架构构建**--在 x86_64 机器上产出 x86_64 包，在 arm64 机器上产出 arm64 包。要给 Apple Silicon (arm64) 用户出包，必须在 arm64 环境跑同一脚本：
+
+- 借一台 Apple Silicon Mac 原生跑；或
+- 在 CI 的 arm64 runner 上跑（如 GitHub Actions `macos-14`/`macos-15` runner 即 arm64）。
+
+无法在 x86 Mac 上直接产出 arm64 包。若需要一个包通吃 x86 + arm64，分别在两种架构各 build 一份，再用 `lipo -create` 合并成 universal2。
+
+**macOS 首次运行**：未签名产物分发后，接收方需解除 quarantine 标记：
+
+```bash
+xattr -d com.apple.quarantine buddy-adapter
+```
+
 ## HTTP 框架
 
 使用 **FastAPI + Uvicorn**（异步，便于 P95 < 50ms 压测与集成测试）。statusLine / hook helper 脚本读取 stdin 后 POST 到 loopback endpoint，且无论 adapter 返回什么都 `exit 0`，避免被 Claude Code 判定为 hook 失败。

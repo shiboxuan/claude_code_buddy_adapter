@@ -21,6 +21,11 @@ dev = [
     "pytest>=8.0",
     "httpx>=0.25",
 ]
+# Nuitka 打包用：./scripts/build.sh 前置安装（pip install -e ".[build]"）
+build = [
+    "nuitka>=2.4",
+    "zstandard>=0.22",
+]
 
 [project.scripts]
 buddy-adapter = "claude_code_buddy_adapter.cli:main"

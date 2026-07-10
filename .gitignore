@@ -6,6 +6,12 @@ __pycache__/
 build/
 dist/
 
+# Nuitka build artifacts
+*.build/
+*.dist/
+*.bin
+*.app/
+
 # test / coverage
 .pytest_cache/
 .coverage
