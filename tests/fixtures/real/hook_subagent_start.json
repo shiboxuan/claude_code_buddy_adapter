@@ -1,0 +1,7 @@
+{
+  "session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "transcript_path": "/tmp/claude-a1b2c3d4/transcript.jsonl",
+  "cwd": "/Users/shiboxuan/century_game/claude_code_buddy_adapter",
+  "hook_event_name": "SubagentStart",
+  "agent_id": "subagent-001"
+}

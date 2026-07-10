@@ -86,9 +86,20 @@ def test_helper_scripts_exit_0_and_curl():
         assert "|| true" in script  # curl 失败也继续
 
 
-def test_install_claude_write_not_implemented_yet(capsys):
-    rc = main(["install-claude", "--write"])
-    assert rc == 2  # ADP-P9 实现
+def test_install_claude_write_aborts_when_settings_missing(tmp_path, capsys):
+    # --write 找不到 settings.json 且无 --create -> 中断（不碰真实 ~/.claude）
+    rc = main(["install-claude", "--write", "--claude-dir", str(tmp_path)])
+    assert rc == 2
+    assert "找不到" in capsys.readouterr().err
+
+
+def test_install_claude_write_create(tmp_path, capsys):
+    rc = main(["install-claude", "--write", "--create", "--claude-dir", str(tmp_path)])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["created"] is True
+    data = json.loads((tmp_path / "settings.json").read_text())
+    assert "hooks" in data and "statusLine" in data
 
 
 # ---- doctor ----
@@ -141,5 +152,15 @@ def test_replay_skips_bad_lines(tmp_path, capsys):
 # ---- dump-state（无 adapter 运行时返回 1）----
 
 def test_dump_state_no_adapter(capsys):
+    # 环境已有 adapter 在 8765 运行时，本测试前提不成立，跳过
+    import socket
+    s = socket.socket()
+    s.settimeout(0.3)
+    try:
+        s.connect(("127.0.0.1", 8765))
+        s.close()
+        pytest.skip("8765 已有 adapter 运行，跳过 no-adapter 测试")
+    except OSError:
+        pass
     rc = main(["dump-state"])
     assert rc == 1  # 无 adapter 连接

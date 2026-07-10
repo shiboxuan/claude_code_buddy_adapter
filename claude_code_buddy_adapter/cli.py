@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from . import __version__
+from . import install_claude as _install
 
 ADAPTER_HOST = "127.0.0.1"
 ADAPTER_PORT = 8765
@@ -45,7 +46,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_install.add_argument("--print", action="store_true", help="只打印配置片段，不写文件")
     p_install.add_argument(
-        "--write", action="store_true", help="写入 ~/.claude/settings.json（先备份；ADP-P9 实现）"
+        "--write", action="store_true",
+        help="写 helper 脚本并追加合并进 settings.json（先备份；幂等）",
+    )
+    p_install.add_argument(
+        "--claude-dir", default=None,
+        help="Claude Code 配置目录（默认 $CLAUDE_CONFIG_DIR 或 ~/.claude）",
+    )
+    p_install.add_argument(
+        "--settings-path", default=None,
+        help="直接指定 settings.json 路径（优先于 --claude-dir）",
+    )
+    p_install.add_argument(
+        "--create", action="store_true",
+        help="settings.json 不存在时新建（默认找不到则中断提示）",
+    )
+    p_install.add_argument(
+        "--force-statusline", action="store_true",
+        help="覆盖已有非 buddy 的 statusLine（Claude Code 仅允许一个 statusLine）",
     )
     p_replay = sub.add_parser("replay", help="回放 JSONL 事件流到状态机")
     p_replay.add_argument("file", help="JSONL 事件文件")
@@ -226,18 +244,31 @@ def _settings_fragment() -> dict:
 
 
 def _cmd_install_claude(args) -> int:
-    if args.write:
-        print(
-            "install-claude --write 计划在 ADP-P9 实现；本期请用 --print 手动合并。",
-            file=sys.stderr,
+    # 默认（无 --write）或显式 --print：只打印配置片段，不写文件
+    if not args.write:
+        cdir = _install.resolve_claude_dir(args.claude_dir)
+        sl = cdir / _install.STATUSLINE_HELPER_NAME
+        hk = cdir / _install.HOOK_HELPER_NAME
+        print("# === {0} ===".format(sl))
+        print(_statusline_helper_script(), end="")
+        print("# === {0} ===".format(hk))
+        print(_hook_helper_script(), end="")
+        print("# === settings.json 片段（手动合并，或用 --write 自动追加合并） ===")
+        print(json.dumps(_install.settings_fragment(sl, hk), indent=2, ensure_ascii=False))
+        return 0
+
+    # --write：写 helper + 追加合并 settings.json（先备份；幂等）
+    try:
+        result = _install.apply_install(
+            args.claude_dir,
+            settings_path=args.settings_path,
+            create=args.create,
+            force_statusline=args.force_statusline,
         )
+    except _install.InstallError as e:
+        print(f"install-claude: {e}", file=sys.stderr)
         return 2
-    print("# === ~/.claude/claude-code-buddy-statusline ===")
-    print(_statusline_helper_script(), end="")
-    print("# === ~/.claude/claude-code-buddy-hook ===")
-    print(_hook_helper_script(), end="")
-    print("# === ~/.claude/settings.json 片段（手动合并） ===")
-    print(json.dumps(_settings_fragment(), indent=2, ensure_ascii=False))
+    print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     return 0
 
 
