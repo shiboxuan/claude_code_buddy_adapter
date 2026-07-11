@@ -47,6 +47,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+        env:
+          # self-hosted runner 用户非 runner，默认 toolcache /Users/runner 无写权限；
+          # 改用 runner 工作区下可写目录（GitHub-hosted 同样可写，无副作用）
+          RUNNER_TOOL_CACHE: ${{ runner.workspace }}/toolcache
 
       - name: 安装依赖
         shell: bash
