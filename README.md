@@ -12,7 +12,6 @@ Claude Code ──HTTP/loopback──▶ adapter ──USB serial(JSON Lines)─
 
 - HTTP receiver 绑定 `127.0.0.1:8765`（仅 loopback，不暴露局域网）。
 - 事件 → normalizer → reducer/arbiter → display composer → serial 协议帧。
-- 详见 `docs/claude_code_buddy/` 下的系统设计与协议文档。
 
 ## 环境要求
 

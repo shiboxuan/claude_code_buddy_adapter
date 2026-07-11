@@ -1,6 +1,6 @@
 """指标计数器骨架，供 dump-state / GET /v1/state 读取。
 
-指标名对齐 docs/claude_code_buddy/claude-code-buddy-system-design.md §可观测性与运维。
+指标名对齐系统设计 §可观测性与运维。
 counter 单调递增；gauge 可设可清；latency 记录 last/count/avg。
 """
 

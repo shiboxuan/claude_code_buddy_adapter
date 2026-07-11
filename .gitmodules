@@ -1,4 +1,0 @@
-[submodule "docs"]
-	path = docs
-	url = git@gitlab.funplus.io:testautomation/docs.git
-	branch = main

@@ -5,7 +5,7 @@
 - state: session state transition，落 state.log。
 - serial: host/device frame，默认只进 ring buffer，不记完整敏感文本。
 
-对齐 docs/claude_code_buddy/claude-code-buddy-system-design.md §可观测性与运维。
+对齐系统设计 §可观测性与运维。
 """
 
 from __future__ import annotations

@@ -5,9 +5,7 @@
 ## 来源
 
 这些是**基于协议契约的真实格式 payload**：字段结构严格对齐
-[protocol §3.2（statusLine）](../../../docs/claude_code_buddy/claude-code-buddy-api-protocol.md)
-/ [§3.3（hooks）](../../../docs/claude_code_buddy/claude-code-buddy-api-protocol.md)
-/ [§5.6（14 个 hook_event_name）](../../../docs/claude_code_buddy/claude-code-buddy-api-protocol.md)，
+protocol §3.2（statusLine）/ §3.3（hooks）/ §5.6（14 个 hook_event_name），
 与 Claude Code 真实发出的 payload 结构一致；`cwd` / `session_id` / `repo.name` 取自本工程真实值。
 
 ## 采集线上真实触发 payload

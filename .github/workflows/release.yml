@@ -49,7 +49,6 @@ jobs:
     runs-on: ${{ matrix.runs_on }}
     steps:
       - uses: actions/checkout@v4
-        # 不拉 docs submodule（GitLab 私有，打包不需要）
 
       - name: 设置 Python（仅 GitHub-hosted）
         if: ${{ matrix.setup_python }}

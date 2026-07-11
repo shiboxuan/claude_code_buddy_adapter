@@ -1,6 +1,6 @@
 """Adapter 配置：默认值、配置文件（TOML/JSON）加载、环境变量覆盖。
 
-字段对齐 docs/claude_code_buddy/claude-code-buddy-system-design.md §数据模型 AdapterConfig。
+字段对齐系统设计 §数据模型 AdapterConfig。
 """
 
 from __future__ import annotations

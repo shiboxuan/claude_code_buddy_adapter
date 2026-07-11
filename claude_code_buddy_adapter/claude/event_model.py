@@ -1,6 +1,6 @@
 """ClaudeEvent 数据模型：normalizer 输出的统一事件表示。
 
-字段对齐 docs/claude_code_buddy/claude-code-buddy-system-design.md §数据模型 ClaudeEvent
+字段对齐系统设计 §数据模型 ClaudeEvent
 （event_id / source / received_at_ms / session_id / hook_event_name / cwd / raw）。
 
 event-specific 字段（tool_name / message / title / error / agent_id …）保留在 ``raw`` 中，
