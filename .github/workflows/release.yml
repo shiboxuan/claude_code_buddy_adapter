@@ -2,8 +2,9 @@
 # 触发：push tag v*（自动出 release）/ 手动 workflow_dispatch。
 # 产物：macOS x86_64、macOS arm64、Windows x86_64 单文件可执行。
 #
-# 架构说明：Nuitka 不支持交叉编译，每个平台用对应架构的 GitHub runner 本机构建--
-# macos-13=Intel x86_64、macos-14=Apple Silicon arm64、windows-latest=Windows x86_64。
+# 架构说明：Nuitka 不支持交叉编译，每个平台用对应架构的 runner 本机构建--
+# macOS x86_64 用 self-hosted Intel Mac（label macos-x86_64，避开 GitHub Intel runner 排队）、
+# macOS arm64 用 macos-14（Apple Silicon）、Windows x86_64 用 windows-latest。
 name: build-release
 
 on:
@@ -27,16 +28,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13
+          # x86 mac 用 self-hosted Intel Mac runner（label macos-x86_64），
+          # 避开 GitHub Intel mac runner 排队；arm64/windows 仍用 GitHub-hosted
+          - runs_on: macos-x86_64
             label: macos-x86_64
             artifact: buddy-adapter-macos-x86_64
-          - os: macos-14
+          - runs_on: macos-14
             label: macos-arm64
             artifact: buddy-adapter-macos-arm64
-          - os: windows-latest
+          - runs_on: windows-latest
             label: windows-x86_64
             artifact: buddy-adapter-windows-x86_64
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runs_on }}
     steps:
       - uses: actions/checkout@v4
         # 不拉 docs submodule（GitLab 私有，打包不需要）
