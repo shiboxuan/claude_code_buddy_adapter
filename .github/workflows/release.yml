@@ -3,7 +3,9 @@
 # 产物：macOS x86_64、macOS arm64、Windows x86_64 单文件可执行。
 #
 # 架构说明：Nuitka 不支持交叉编译，每个平台用对应架构的 runner 本机构建--
-# macOS x86_64 用 self-hosted Intel Mac（label macos-x86_64，避开 GitHub Intel runner 排队）、
+# macOS x86_64 用 self-hosted Intel Mac（label macos-x86_64，避开 GitHub Intel runner 排队；
+# Python 直接用本机 conda env，因 setup-python 在 self-hosted 上 toolcache 路径
+# /Users/runner 权限受限、且 install.sh 硬编码不读 AGENT_TOOLSDIRECTORY）、
 # macOS arm64 用 macos-14（Apple Silicon）、Windows x86_64 用 windows-latest。
 name: build-release
 
@@ -28,42 +30,43 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # x86 mac 用 self-hosted Intel Mac runner（label macos-x86_64），
-          # 避开 GitHub Intel mac runner 排队；arm64/windows 仍用 GitHub-hosted
+          # x86 mac：self-hosted Intel Mac，Python 用本机 conda env（跳过 setup-python）
           - runs_on: macos-x86_64
             label: macos-x86_64
             artifact: buddy-adapter-macos-x86_64
+            py: /Users/shiboxuan/anaconda3/envs/claude_code_buddy_adapter/bin/python
+            setup_python: false
           - runs_on: macos-14
             label: macos-arm64
             artifact: buddy-adapter-macos-arm64
+            py: python
+            setup_python: true
           - runs_on: windows-latest
             label: windows-x86_64
             artifact: buddy-adapter-windows-x86_64
+            py: python
+            setup_python: true
     runs-on: ${{ matrix.runs_on }}
     steps:
       - uses: actions/checkout@v4
         # 不拉 docs submodule（GitLab 私有，打包不需要）
 
-      - uses: actions/setup-python@v5
+      - name: 设置 Python（仅 GitHub-hosted）
+        if: ${{ matrix.setup_python }}
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-        env:
-          # self-hosted runner 用户非 runner，默认 toolcache /Users/runner 无写权限。
-          # python-versions 的 install.sh 实际读 AGENT_TOOLSDIRECTORY（仅设
-          # RUNNER_TOOL_CACHE 不够，install.sh 仍会 mkdir /Users/runner）
-          AGENT_TOOLSDIRECTORY: ${{ runner.workspace }}/toolcache
-          RUNNER_TOOL_CACHE: ${{ runner.workspace }}/toolcache
 
       - name: 安装依赖
         shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[build]"
+          "${{ matrix.py }}" -m pip install --upgrade pip
+          "${{ matrix.py }}" -m pip install -e ".[build]"
 
       - name: Nuitka 打包
         shell: bash
         env:
-          PYTHON: python
+          PYTHON: ${{ matrix.py }}
         run: bash scripts/build.sh --output-name "${{ matrix.artifact }}"
 
       - name: 上传产物
