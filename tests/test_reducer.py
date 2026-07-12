@@ -1,6 +1,6 @@
 """ADP-P2: reducer 状态机单元测试。
 
-覆盖状态图全部边、14 个 hook_event_name 映射、TTL 降级、error 进出、不可变与元数据。
+覆盖状态图全部边、固定 hook 映射、Notification subtype、TTL 降级、error 进出、不可变与元数据。
 """
 
 from __future__ import annotations
@@ -71,13 +71,19 @@ def test_working_to_attention():
     assert reduce_event(s, _hook("PermissionRequest")).state == SessionState.attention
 
 
+@pytest.mark.parametrize("tool_name", ["AskUserQuestion", "ExitPlanMode"])
+def test_pretooluse_that_waits_for_user_is_attention(tool_name):
+    s = reduce_event(new_session("s"), _hook("UserPromptSubmit"))
+    assert reduce_event(s, _hook("PreToolUse", tool_name=tool_name)).state == SessionState.attention
+
+
 def test_attention_to_working_elicitation_result():
-    s = reduce_event(new_session("s"), _hook("Notification"))
+    s = reduce_event(new_session("s"), _hook("Elicitation"))
     assert reduce_event(s, _hook("ElicitationResult")).state == SessionState.working
 
 
 def test_attention_to_working_new_tool():
-    s = reduce_event(new_session("s"), _hook("Notification"))
+    s = reduce_event(new_session("s"), _hook("PermissionRequest"))
     assert reduce_event(s, _hook("PreToolUse")).state == SessionState.working
 
 
@@ -99,7 +105,7 @@ def test_working_to_error_posttooluse_failure():
 
 
 def test_attention_to_error_stopfailure():
-    s = reduce_event(new_session("s"), _hook("Notification"))
+    s = reduce_event(new_session("s"), _hook("PermissionRequest"))
     assert reduce_event(s, _hook("StopFailure", error="x")).state == SessionState.error
 
 
@@ -139,7 +145,6 @@ def test_error_to_ended():
     ("MessageDisplay", SessionState.working),
     ("SubagentStart", SessionState.working),
     ("TaskCreated", SessionState.working),
-    ("Notification", SessionState.attention),
     ("PermissionRequest", SessionState.attention),
     ("Elicitation", SessionState.attention),
     ("ElicitationResult", SessionState.working),
@@ -155,11 +160,43 @@ def test_hook_event_state_mapping(name, expected):
 def test_hook_state_map_is_complete():
     assert set(HOOK_STATE_MAP) == {
         "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
-        "MessageDisplay", "SubagentStart", "TaskCreated", "Notification",
+        "MessageDisplay", "SubagentStart", "TaskCreated",
         "PermissionRequest", "Elicitation", "ElicitationResult", "Stop",
         "StopFailure", "SessionEnd",
     }
-    assert len(HOOK_STATE_MAP) == 14
+    assert len(HOOK_STATE_MAP) == 13
+
+
+@pytest.mark.parametrize("notification_type", [
+    "permission_prompt",
+    "elicitation_dialog",
+    "agent_needs_input",
+])
+def test_notification_that_waits_for_user_is_attention(notification_type):
+    s = reduce_event(new_session("s"), _hook("UserPromptSubmit"))
+    s = reduce_event(s, _hook("Notification", notification_type=notification_type))
+    assert s.state == SessionState.attention
+
+
+def test_idle_prompt_notification_is_idle():
+    s = reduce_event(new_session("s"), _hook("UserPromptSubmit"))
+    s = reduce_event(s, _hook("Notification", notification_type="idle_prompt"))
+    assert s.state == SessionState.idle
+
+
+@pytest.mark.parametrize("notification_type", ["elicitation_complete", "elicitation_response"])
+def test_completed_elicitation_notification_is_working(notification_type):
+    s = reduce_event(new_session("s"), _hook("Elicitation"))
+    s = reduce_event(s, _hook("Notification", notification_type=notification_type))
+    assert s.state == SessionState.working
+
+
+@pytest.mark.parametrize("notification_type", ["auth_success", "agent_completed", "future_type", None])
+def test_non_state_notification_preserves_current_state(notification_type):
+    s = reduce_event(new_session("s"), _hook("UserPromptSubmit"))
+    extra = {} if notification_type is None else {"notification_type": notification_type}
+    s = reduce_event(s, _hook("Notification", **extra))
+    assert s.state == SessionState.working
 
 
 # ---------------- T04 TTL 机制 ----------------
@@ -170,12 +207,12 @@ def test_done_recent_within_ttl_stays():
 
 
 def test_attention_stale_to_idle():
-    s = reduce_event(new_session("s"), _hook("Notification"), now_ms=1000)
+    s = reduce_event(new_session("s"), _hook("Notification", notification_type="permission_prompt"), now_ms=1000)
     assert tick(s, now_ms=301000, session_ttl_ms=300000).state == SessionState.idle
 
 
 def test_attention_within_ttl_stays():
-    s = reduce_event(new_session("s"), _hook("Notification"), now_ms=1000)
+    s = reduce_event(new_session("s"), _hook("Notification", notification_type="permission_prompt"), now_ms=1000)
     assert tick(s, now_ms=100000, session_ttl_ms=300000).state == SessionState.attention
 
 
@@ -184,9 +221,25 @@ def test_error_stale_to_idle():
     assert tick(s, now_ms=301000, session_ttl_ms=300000).state == SessionState.idle
 
 
-def test_tick_does_not_change_other_states():
-    s = reduce_event(new_session("s"), _hook("PreToolUse"))
-    assert tick(s, now_ms=9_999_999).state == SessionState.working
+def test_tick_working_within_ttl_stays():
+    s = reduce_event(new_session("s"), _hook("PreToolUse"), now_ms=1000)
+    assert tick(s, now_ms=10_000, working_ttl_ms=600_000).state == SessionState.working
+
+
+def test_tick_working_stale_to_done_recent():
+    """working 超过 working_ttl_ms 无 hook 事件 -> done_recent（ESC 中断后 CC 不发 Stop 的兜底）。"""
+    s = reduce_event(new_session("s"), _hook("PreToolUse"), now_ms=1000)
+    assert tick(s, now_ms=601_000, working_ttl_ms=600_000).state == SessionState.done_recent
+
+
+def test_statusline_does_not_refresh_last_hook_at_ms():
+    """statusLine 每 2s 刷 updated_at_ms 但不刷 last_hook_at_ms，保证 working TTL 可触发。"""
+    s = reduce_event(new_session("s"), _hook("PreToolUse"), now_ms=1000)
+    assert s.last_hook_at_ms == 1000
+    s = reduce_event(s, _statusline(), now_ms=2000)  # statusLine 到来
+    assert s.last_hook_at_ms == 1000  # 未被刷新
+    assert s.updated_at_ms == 2000  # 但 updated_at_ms 被刷新
+    assert tick(s, now_ms=601_000, working_ttl_ms=600_000).state == SessionState.done_recent
 
 
 # ---------------- T05 error 进入/退出 ----------------

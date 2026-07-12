@@ -35,7 +35,8 @@ SETTINGS_NAME = "settings.json"
 # install-claude 注册的 hook 事件（MVP 最小集，对齐 reducer 状态机）
 HOOK_EVENTS = [
     "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
-    "Notification", "Stop", "StopFailure", "SessionEnd",
+    "PermissionRequest", "Notification", "Stop", "StopFailure",
+    "Elicitation", "ElicitationResult", "SessionEnd",
 ]
 HOOK_EVENTS_WITH_MATCHER = {"PreToolUse", "PostToolUse"}
 

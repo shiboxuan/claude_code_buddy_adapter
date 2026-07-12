@@ -45,6 +45,7 @@ class AdapterConfig:
     sound_enabled_default: bool = True
     done_ttl_ms: int = 5000
     session_ttl_ms: int = 300_000  # attention stale 超时（BR-007/BR-008）
+    working_ttl_ms: int = 600_000  # working 无 hook 事件超时降级（ESC 中断后 CC 不发 Stop 的兜底）
     # feature flags
     debug_event_log: bool = False
     message_display_capture: bool = False
@@ -93,6 +94,8 @@ class AdapterConfig:
             self.done_ttl_ms = _env_int(f"{prefix}DONE_TTL_MS", self.done_ttl_ms)
         if f"{prefix}SESSION_TTL_MS" in env:
             self.session_ttl_ms = _env_int(f"{prefix}SESSION_TTL_MS", self.session_ttl_ms)
+        if f"{prefix}WORKING_TTL_MS" in env:
+            self.working_ttl_ms = _env_int(f"{prefix}WORKING_TTL_MS", self.working_ttl_ms)
         if f"{prefix}DEBUG_EVENT_LOG" in env:
             self.debug_event_log = _env_bool(f"{prefix}DEBUG_EVENT_LOG", self.debug_event_log)
         if f"{prefix}MESSAGE_DISPLAY_CAPTURE" in env:

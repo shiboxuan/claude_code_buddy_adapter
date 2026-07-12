@@ -23,6 +23,7 @@ class SessionStore:
         self,
         done_ttl_ms: int = 5000,
         session_ttl_ms: int = 300_000,
+        working_ttl_ms: int = 600_000,
         debug_jsonl: Optional[str] = None,
     ) -> None:
         self._lock = threading.RLock()
@@ -30,7 +31,9 @@ class SessionStore:
         self._archived: dict[str, Session] = {}
         self._done_ttl_ms = done_ttl_ms
         self._session_ttl_ms = session_ttl_ms
+        self._working_ttl_ms = working_ttl_ms
         self._debug_jsonl = debug_jsonl
+        self._revision = 0
 
     # ---- 增删改查 ----
     def _now_ms(self) -> int:
@@ -44,10 +47,16 @@ class SessionStore:
         """
         for sid in list(self._sessions.keys()):
             s = self._sessions[sid]
-            ticked = tick(s, now_ms, self._done_ttl_ms, self._session_ttl_ms)
+            ticked = tick(s, now_ms, self._done_ttl_ms, self._session_ttl_ms, self._working_ttl_ms)
             if ticked.state != s.state:
                 self._sessions[sid] = ticked
+                self._revision += 1
         return list(self._sessions.values())
+
+    @property
+    def revision(self) -> int:
+        with self._lock:
+            return self._revision
 
     def get(self, session_id: str, now_ms: Optional[int] = None) -> Optional[Session]:
         with self._lock:
@@ -63,6 +72,7 @@ class SessionStore:
     def upsert(self, session: Session) -> None:
         with self._lock:
             self._sessions[session.session_id] = replace(session)
+            self._revision += 1
 
     def apply_event(self, event: ClaudeEvent, now_ms: Optional[int] = None) -> Session:
         """reduce event 到对应 session 并存回；ended 自动归档。返回更新后的副本。"""
@@ -70,9 +80,10 @@ class SessionStore:
         with self._lock:
             existing = self._sessions.get(event.session_id)
             base = existing if existing is not None else new_session(event.session_id)
-            base = tick(base, now, self._done_ttl_ms, self._session_ttl_ms)  # 惰性降级
+            base = tick(base, now, self._done_ttl_ms, self._session_ttl_ms, self._working_ttl_ms)  # 惰性降级
             updated = reduce_event(base, event, now_ms=now)
             self._sessions[event.session_id] = updated
+            self._revision += 1
             if updated.state == SessionState.ended:
                 self._archive_locked(event.session_id)
             self._write_debug(event, updated)
@@ -86,12 +97,22 @@ class SessionStore:
         s = self._sessions.pop(session_id, None)
         if s is not None:
             self._archived[session_id] = s
+            self._revision += 1
 
     # ---- 查询 ----
     def active(self, now_ms: Optional[int] = None) -> list[Session]:
         with self._lock:
             sessions = self._refresh_locked(now_ms if now_ms is not None else self._now_ms())
             return [replace(s) for s in sessions if s.state != SessionState.ended]
+
+    def active_with_revision(
+        self, now_ms: Optional[int] = None
+    ) -> tuple[list[Session], int]:
+        """原子读取 active sessions 与对应 revision，供设备 snapshot 去重。"""
+        with self._lock:
+            sessions = self._refresh_locked(now_ms if now_ms is not None else self._now_ms())
+            active = [replace(s) for s in sessions if s.state != SessionState.ended]
+            return active, self._revision
 
     def all(self, now_ms: Optional[int] = None) -> list[Session]:
         with self._lock:
@@ -105,9 +126,10 @@ class SessionStore:
         with self._lock:
             for sid in list(self._sessions.keys()):
                 s = self._sessions[sid]
-                ticked = tick(s, now_ms, self._done_ttl_ms, ttl)
+                ticked = tick(s, now_ms, self._done_ttl_ms, ttl, self._working_ttl_ms)
                 if ticked.state != s.state:
                     self._sessions[sid] = ticked
+                    self._revision += 1
                 if ticked.state == SessionState.ended:
                     self._archive_locked(sid)
                     removed += 1

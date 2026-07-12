@@ -61,7 +61,11 @@ def test_hook_drives_state_machine():
 
 def test_hook_attention_then_done():
     client, store = _client()
-    client.post("/v1/claude/hook", json={"session_id": "s1", "hook_event_name": "Notification"})
+    client.post("/v1/claude/hook", json={
+        "session_id": "s1",
+        "hook_event_name": "Notification",
+        "notification_type": "permission_prompt",
+    })
     assert store.get("s1").state == SessionState.attention
     client.post("/v1/claude/hook", json={"session_id": "s1", "hook_event_name": "Stop"})
     assert store.get("s1").state == SessionState.done_recent
@@ -93,7 +97,11 @@ def test_state_fields_complete():
 def test_state_counts():
     client, _ = _client()
     client.post("/v1/claude/hook", json={"session_id": "s1", "hook_event_name": "PreToolUse"})
-    client.post("/v1/claude/hook", json={"session_id": "s2", "hook_event_name": "Notification"})
+    client.post("/v1/claude/hook", json={
+        "session_id": "s2",
+        "hook_event_name": "Notification",
+        "notification_type": "permission_prompt",
+    })
     counts = client.get("/v1/state").json()["counts"]
     assert counts["sessions"] == 2
     assert counts["working"] == 1
