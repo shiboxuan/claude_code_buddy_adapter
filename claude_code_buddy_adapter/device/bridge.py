@@ -59,6 +59,7 @@ class SerialBridge:
         self._cleanup_thread: Optional[threading.Thread] = None
         self._reconnect_thread: Optional[threading.Thread] = None
         self._handshook = False
+        self._last_snapshot_revision = -1
 
     # ---- 生命周期 ----
     def start(self) -> None:
@@ -160,13 +161,14 @@ class SerialBridge:
 
     def send_full_snapshot(self, now_ms: Optional[int] = None, alert: Optional[dict] = None) -> None:
         now = now_ms if now_ms is not None else int(time.time() * 1000)
-        sessions = self._store.active()
+        sessions, revision = self._store.active_with_revision(now_ms=now)
         with self._lock:
             seq = self._seq.next()
             frame = self._composer.compose_device_snapshot(
                 sessions, device_connected=True, seq=seq, now_ms=now, alert=alert
             )
-        self._send(frame)
+            self._send(frame)
+            self._last_snapshot_revision = revision
 
     def handle_state_change(self, prev, updated) -> None:
         """状态变化时触发 alert 边沿 + 全量 snapshot（供 HTTP receiver 调用）。"""
@@ -198,7 +200,16 @@ class SerialBridge:
             if self._stop.wait(self._cleanup_interval):
                 break
             try:
-                self._store.cleanup(int(time.time() * 1000))
+                now_ms = int(time.time() * 1000)
+                self._store.cleanup(now_ms)
+                with self._lock:
+                    should_push = (
+                        self._handshook
+                        and self._transport.is_open
+                        and self._store.revision != self._last_snapshot_revision
+                    )
+                if should_push:
+                    self.send_full_snapshot(now_ms=now_ms)
             except Exception:
                 pass
 

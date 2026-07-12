@@ -53,10 +53,12 @@ def test_env_override(monkeypatch):
     monkeypatch.setenv("BUDDY_HTTP_PORT", "7777")
     monkeypatch.setenv("BUDDY_PRIVACY_MODE", "true")
     monkeypatch.setenv("BUDDY_SERIAL_PORT", "/dev/ttyUSB0")
+    monkeypatch.setenv("BUDDY_WORKING_TTL_MS", "12345")
     cfg = AdapterConfig.load()
     assert cfg.http_port == 7777
     assert cfg.privacy_mode is True
     assert cfg.serial_port == "/dev/ttyUSB0"
+    assert cfg.working_ttl_ms == 12345
 
 
 def test_env_overrides_file(tmp_path, monkeypatch):

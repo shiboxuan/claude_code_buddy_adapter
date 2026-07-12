@@ -28,7 +28,7 @@ class SessionState(str, Enum):
     ended = "ended"
 
 
-# protocol §5.6 hook_event_name → 目标状态（T03 映射权威表）
+# protocol §5.6 固定 hook_event_name → 目标状态（Notification 按 subtype 单独分类）
 HOOK_STATE_MAP: dict[str, SessionState] = {
     "SessionStart": SessionState.idle,
     "UserPromptSubmit": SessionState.working,
@@ -37,7 +37,6 @@ HOOK_STATE_MAP: dict[str, SessionState] = {
     "MessageDisplay": SessionState.working,
     "SubagentStart": SessionState.working,
     "TaskCreated": SessionState.working,
-    "Notification": SessionState.attention,
     "PermissionRequest": SessionState.attention,
     "Elicitation": SessionState.attention,
     "ElicitationResult": SessionState.working,  # attention → working
@@ -46,11 +45,16 @@ HOOK_STATE_MAP: dict[str, SessionState] = {
     "SessionEnd": SessionState.ended,
 }
 
-ATTENTION_EVENTS = frozenset({"Notification", "PermissionRequest", "Elicitation"})
+ATTENTION_EVENTS = frozenset({"PermissionRequest", "Elicitation"})
 WORKING_EVENTS = frozenset({
     "UserPromptSubmit", "PreToolUse", "PostToolUse", "MessageDisplay",
     "SubagentStart", "TaskCreated", "ElicitationResult",
 })
+ATTENTION_TOOLS = frozenset({"AskUserQuestion", "ExitPlanMode"})
+ATTENTION_NOTIFICATION_TYPES = frozenset({
+    "permission_prompt", "elicitation_dialog", "agent_needs_input",
+})
+WORKING_NOTIFICATION_TYPES = frozenset({"elicitation_complete", "elicitation_response"})
 
 
 @dataclass
@@ -72,6 +76,7 @@ class Session:
     reason: Optional[str] = None
     progress: Optional[float] = None  # 0–100，来自 statusLine context_window.used_percentage
     updated_at_ms: int = 0
+    last_hook_at_ms: Optional[int] = None  # 最后一次 hook 事件时间（statusLine 不刷新），用于 working TTL 兜底
     attention_since_ms: Optional[int] = None
     # TTL 起算时间
     done_at_ms: Optional[int] = None
@@ -113,6 +118,19 @@ def reduce_event(
         s.state = SessionState.done_recent
         s.done_at_ms = now
         s.attention_since_ms = None
+    elif name == "PreToolUse" and event.tool_name in ATTENTION_TOOLS:
+        s.state = SessionState.attention
+        s.attention_since_ms = now
+    elif name == "Notification":
+        if event.notification_type in ATTENTION_NOTIFICATION_TYPES:
+            s.state = SessionState.attention
+            s.attention_since_ms = now
+        elif event.notification_type == "idle_prompt":
+            s.state = SessionState.idle
+            s.attention_since_ms = None
+        elif event.notification_type in WORKING_NOTIFICATION_TYPES:
+            s.state = SessionState.working
+            s.attention_since_ms = None
     elif name in ATTENTION_EVENTS:
         s.state = SessionState.attention
         s.attention_since_ms = now
@@ -125,6 +143,8 @@ def reduce_event(
     # 未知 hook_event_name：保持当前状态（容错）
 
     s.updated_at_ms = now
+    if event.source == "hook":
+        s.last_hook_at_ms = now  # statusLine 不刷新此字段，保证 working TTL 可触发
     _apply_metadata(s, event)
     return s
 
@@ -167,14 +187,21 @@ def tick(
     now_ms: int,
     done_ttl_ms: int = 5000,
     session_ttl_ms: int = 300_000,
+    working_ttl_ms: int = 600_000,
 ) -> Session:
     """惰性 TTL 降级（BR-007/BR-008），返回新 Session。
 
+    - working 超过 working_ttl_ms 无 hook 事件 -> done_recent（ESC 中断后 CC 不发 Stop 的兜底）
     - done_recent 经 done_ttl_ms → idle
     - attention 超过 session_ttl_ms → idle（stale attention 降级）
     - error 超过 session_ttl_ms → idle（错误超时降级）
     """
     s = replace(session)
+    if s.state == SessionState.working and s.last_hook_at_ms is not None:
+        if now_ms - s.last_hook_at_ms >= working_ttl_ms:
+            s.state = SessionState.done_recent
+            s.done_at_ms = now_ms
+            s.attention_since_ms = None
     if s.state == SessionState.done_recent and s.done_at_ms is not None:
         if now_ms - s.done_at_ms >= done_ttl_ms:
             s.state = SessionState.idle

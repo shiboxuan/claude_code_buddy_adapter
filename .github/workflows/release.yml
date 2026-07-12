@@ -4,7 +4,7 @@
 #
 # 架构说明：Nuitka 不支持交叉编译，每个平台用对应架构的 runner 本机构建--
 # macOS x86_64 用 self-hosted Intel Mac（label macos-x86_64，避开 GitHub Intel runner 排队；
-# Python 直接用本机 conda env，因 setup-python 在 self-hosted 上 toolcache 路径
+# 用本机 conda Python 创建任务级临时 venv，因 setup-python 在 self-hosted 上 toolcache 路径
 # /Users/runner 权限受限、且 install.sh 硬编码不读 AGENT_TOOLSDIRECTORY）、
 # macOS arm64 用 macos-14（Apple Silicon）、Windows x86_64 用 windows-latest。
 name: build-release
@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # x86 mac：self-hosted Intel Mac，Python 用本机 conda env（跳过 setup-python）
+          # x86 mac：self-hosted Intel Mac，用本机 conda Python 创建临时 venv（跳过 setup-python）
           - runs_on: macos-x86_64
             label: macos-x86_64
             artifact: buddy-adapter-macos-x86_64
@@ -56,17 +56,31 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: 创建隔离构建环境
+        shell: bash
+        run: |
+          VENV_DIR="$RUNNER_TEMP/claude-code-buddy-adapter-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.label }}"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            VENV_DIR="$(cygpath -u "$VENV_DIR")"
+          fi
+          "${{ matrix.py }}" -m venv "$VENV_DIR"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            VENV_PYTHON="$VENV_DIR/Scripts/python.exe"
+          else
+            VENV_PYTHON="$VENV_DIR/bin/python"
+          fi
+          echo "VENV_PYTHON=$VENV_PYTHON" >> "$GITHUB_ENV"
+          "$VENV_PYTHON" -c "import sys; print(f'isolated python: {sys.executable}')"
+
       - name: 安装依赖
         shell: bash
         run: |
-          "${{ matrix.py }}" -m pip install --upgrade pip
-          "${{ matrix.py }}" -m pip install -e ".[build]"
+          "$VENV_PYTHON" -m pip install --upgrade pip
+          "$VENV_PYTHON" -m pip install -e ".[build]"
 
       - name: Nuitka 打包
         shell: bash
-        env:
-          PYTHON: ${{ matrix.py }}
-        run: bash scripts/build.sh --output-name "${{ matrix.artifact }}"
+        run: PYTHON="$VENV_PYTHON" bash scripts/build.sh --output-name "${{ matrix.artifact }}"
 
       - name: 上传产物
         uses: actions/upload-artifact@v4

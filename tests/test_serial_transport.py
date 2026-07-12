@@ -99,6 +99,43 @@ def test_ack_does_not_block_sending():
     assert any(f["type"] == "device_snapshot" for f in fake.written)
 
 
+def test_cleanup_ttl_state_change_pushes_new_snapshot():
+    fake = FakeSerialTransport()
+    store = SessionStore(done_ttl_ms=5000, working_ttl_ms=20)
+    config = AdapterConfig(done_ttl_ms=5000, working_ttl_ms=20)
+    bridge = SerialBridge(
+        fake,
+        store,
+        DisplayComposer(config),
+        config,
+        cleanup_interval=0.01,
+        heartbeat_interval=99.0,
+    )
+    now_ms = int(time.time() * 1000)
+    event = _working_event("s1")
+    event.received_at_ms = now_ms
+
+    bridge.start()
+    try:
+        bridge.handle_frame(_hello())
+        fake.written.clear()
+        store.apply_event(event, now_ms=now_ms)
+        bridge.send_full_snapshot(now_ms=now_ms)
+
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            snapshots = [f for f in fake.written if f["type"] == "device_snapshot"]
+            if snapshots and snapshots[-1]["global_state"] == "idle":
+                break
+            time.sleep(0.01)
+
+        snapshots = [f for f in fake.written if f["type"] == "device_snapshot"]
+        assert snapshots[-1]["global_state"] == "idle"
+        assert len(snapshots) >= 2
+    finally:
+        bridge.stop()
+
+
 # ---- 坏包 ----
 
 def test_bad_frame_increments_parse_error_metric():
@@ -122,8 +159,8 @@ def test_disconnect_clears_handshake_and_preserves_store():
     bridge._on_disconnect()
     assert bridge.handshook is False
     # store 未丢
-    assert store.get("s1") is not None
-    assert store.get("s1").state == SessionState.working
+    assert store.get("s1", now_ms=1000) is not None
+    assert store.get("s1", now_ms=1000).state == SessionState.working
 
 
 def test_reconnect_resends_full_snapshot():

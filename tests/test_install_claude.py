@@ -15,6 +15,24 @@ import pytest
 
 from claude_code_buddy_adapter import install_claude as ic
 
+EXPECTED_HOOK_EVENTS = {
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PermissionRequest",
+    "Notification",
+    "Stop",
+    "StopFailure",
+    "Elicitation",
+    "ElicitationResult",
+    "SessionEnd",
+}
+
+
+def test_hook_events_cover_user_attention_lifecycle():
+    assert set(ic.HOOK_EVENTS) == EXPECTED_HOOK_EVENTS
+
 
 # ---- 路径解析 ----
 def test_resolve_claude_dir_explicit_wins(monkeypatch, tmp_path):

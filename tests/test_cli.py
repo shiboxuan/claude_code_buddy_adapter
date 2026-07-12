@@ -6,6 +6,8 @@ import json
 
 import pytest
 
+from claude_code_buddy_adapter import install_claude as ic
+from claude_code_buddy_adapter import cli
 from claude_code_buddy_adapter.cli import (
     _hook_helper_script,
     _settings_fragment,
@@ -68,8 +70,7 @@ def test_install_claude_settings_fragment_valid():
     frag = _settings_fragment()
     assert frag["statusLine"]["type"] == "command"
     assert frag["statusLine"]["refreshInterval"] == 2
-    for ev in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
-               "Notification", "Stop", "StopFailure", "SessionEnd"]:
+    for ev in ic.HOOK_EVENTS:
         assert ev in frag["hooks"]
     # PreToolUse/PostToolUse 带 matcher
     assert frag["hooks"]["PreToolUse"][0]["matcher"] == "*"
@@ -77,6 +78,17 @@ def test_install_claude_settings_fragment_valid():
     # SessionStart 不带 matcher
     assert "matcher" not in frag["hooks"]["SessionStart"][0]
     json.dumps(frag)  # JSON 合法
+
+
+def test_install_claude_print_uses_installer_as_single_authority(monkeypatch):
+    monkeypatch.setattr(ic, "statusline_helper_script", lambda: "statusline-authority\n")
+    monkeypatch.setattr(ic, "hook_helper_script", lambda: "hook-authority\n")
+    sentinel = {"statusLine": {"command": "authority"}, "hooks": {}}
+    monkeypatch.setattr(ic, "settings_fragment", lambda statusline, hook: sentinel)
+
+    assert cli._statusline_helper_script() == "statusline-authority\n"
+    assert cli._hook_helper_script() == "hook-authority\n"
+    assert cli._settings_fragment() is sentinel
 
 
 def test_helper_scripts_exit_0_and_curl():
@@ -151,16 +163,33 @@ def test_replay_skips_bad_lines(tmp_path, capsys):
 
 # ---- dump-state（无 adapter 运行时返回 1）----
 
-def test_dump_state_no_adapter(capsys):
-    # 环境已有 adapter 在 8765 运行时，本测试前提不成立，跳过
+def test_dump_state_uses_configured_adapter_endpoint(monkeypatch, capsys):
+    monkeypatch.setenv("BUDDY_HTTP_HOST", "127.0.0.7")
+    monkeypatch.setenv("BUDDY_HTTP_PORT", "54321")
+    requested: list[str] = []
+
+    def fake_get(url: str):
+        requested.append(url)
+        return {"metrics": {}} if url.endswith("/v1/metrics") else {"sessions": []}
+
+    monkeypatch.setattr(cli, "_http_get", fake_get)
+
+    assert main(["dump-state"]) == 0
+    assert requested == [
+        "http://127.0.0.7:54321/v1/state",
+        "http://127.0.0.7:54321/v1/metrics",
+    ]
+    json.loads(capsys.readouterr().out)
+
+
+def test_dump_state_no_adapter(monkeypatch, capsys):
     import socket
-    s = socket.socket()
-    s.settimeout(0.3)
-    try:
-        s.connect(("127.0.0.1", 8765))
-        s.close()
-        pytest.skip("8765 已有 adapter 运行，跳过 no-adapter 测试")
-    except OSError:
-        pass
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        unused_port = sock.getsockname()[1]
+    monkeypatch.setenv("BUDDY_HTTP_HOST", "127.0.0.1")
+    monkeypatch.setenv("BUDDY_HTTP_PORT", str(unused_port))
+
     rc = main(["dump-state"])
     assert rc == 1  # 无 adapter 连接

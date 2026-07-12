@@ -34,7 +34,7 @@ def test_apply_event_transitions():
     store = SessionStore()
     store.apply_event(_hook("SessionStart", "s1"))
     store.apply_event(_hook("UserPromptSubmit", "s1"))
-    assert store.get("s1").state == SessionState.working
+    assert store.get("s1", now_ms=1000).state == SessionState.working
 
 
 def test_apply_event_archives_ended():
@@ -55,7 +55,10 @@ def test_ended_not_in_focus():
 def test_counts_and_focus_attention_priority():
     store = SessionStore()
     store.apply_event(_hook("PreToolUse", "s1"), now_ms=1000)
-    store.apply_event(_hook("Notification", "s2"), now_ms=2000)
+    store.apply_event(
+        _hook("Notification", "s2", notification_type="permission_prompt"),
+        now_ms=2000,
+    )
     c = store.counts(now_ms=2000)
     assert c["working"] == 1
     assert c["attention"] == 1
@@ -65,7 +68,7 @@ def test_counts_and_focus_attention_priority():
 def test_global_state_aggregation():
     store = SessionStore()
     store.apply_event(_hook("PreToolUse", "s1"))
-    assert store.global_state(device_connected=True) == "working"
+    assert store.global_state(device_connected=True, now_ms=1000) == "working"
     assert store.global_state(device_connected=False) == "device_disconnected"
     assert store.global_state(device_connected=True) != "device_disconnected"
 
@@ -100,10 +103,22 @@ def test_query_downgrades_done_recent_without_new_event():
 def test_query_downgrades_attention_stale():
     """A: attention 超 session_ttl_ms 无新事件应降级 idle（BR-007/BR-008）。"""
     store = SessionStore(session_ttl_ms=300_000)
-    store.apply_event(_hook("Notification", "s1"), now_ms=1000)  # attention at 1000
+    store.apply_event(
+        _hook("Notification", "s1", notification_type="permission_prompt"),
+        now_ms=1000,
+    )
     assert store.global_state(True, now_ms=200_000) == "attention"  # 未超时
     assert store.global_state(True, now_ms=400_000) == "idle"  # 399000 >= 300000 降级
     assert store.get("s1", now_ms=400_000).state == SessionState.idle
+
+
+def test_revision_increases_when_query_ticks_state():
+    store = SessionStore(working_ttl_ms=600_000)
+    store.apply_event(_hook("PreToolUse", "s1"), now_ms=1000)
+    before = store.revision
+
+    assert store.get("s1", now_ms=601_000).state == SessionState.done_recent
+    assert store.revision > before
 
 
 def test_thread_safety_concurrent_apply():
@@ -118,7 +133,7 @@ def test_thread_safety_concurrent_apply():
         t.start()
     for t in threads:
         t.join()
-    c = store.counts()
+    c = store.counts(now_ms=100)
     assert c["sessions"] == 8
     assert c["working"] == 8
 
@@ -126,7 +141,7 @@ def test_thread_safety_concurrent_apply():
 def test_snapshot():
     store = SessionStore()
     store.apply_event(_hook("PreToolUse", "s1"), now_ms=1000)
-    snap = store.snapshot(device_connected=True)
+    snap = store.snapshot(device_connected=True, now_ms=1000)
     assert snap["device_connected"] is True
     assert snap["global_state"] == "working"
     assert snap["focus_session_id"] == "s1"
@@ -157,7 +172,10 @@ def test_get_returns_copy_not_internal():
 
 def test_focus_returns_copy_not_internal():
     store = SessionStore()
-    store.apply_event(_hook("Notification", "s1"), now_ms=1000)  # attention
+    store.apply_event(
+        _hook("Notification", "s1", notification_type="permission_prompt"),
+        now_ms=1000,
+    )
     f = store.focus(now_ms=1000)
     assert f is not None
     f.state = SessionState.idle  # 外部修改

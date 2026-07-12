@@ -16,20 +16,10 @@ from typing import Optional, Sequence
 from . import __version__
 from . import install_claude as _install
 
-ADAPTER_HOST = "127.0.0.1"
-ADAPTER_PORT = 8765
 CLAUDE_DIR = Path.home() / ".claude"
 STATUSLINE_HELPER = CLAUDE_DIR / "claude-code-buddy-statusline"
 HOOK_HELPER = CLAUDE_DIR / "claude-code-buddy-hook"
 SETTINGS_JSON = CLAUDE_DIR / "settings.json"
-
-# install-claude 注册的 hook 事件（MVP 最小集）
-HOOK_EVENTS = [
-    "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
-    "Notification", "Stop", "StopFailure", "SessionEnd",
-]
-HOOK_EVENTS_WITH_MATCHER = {"PreToolUse", "PostToolUse"}
-
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -120,7 +110,9 @@ def _build_runtime(config):
     from .session.store import SessionStore
 
     store = SessionStore(
-        done_ttl_ms=config.done_ttl_ms, session_ttl_ms=config.session_ttl_ms
+        done_ttl_ms=config.done_ttl_ms,
+        session_ttl_ms=config.session_ttl_ms,
+        working_ttl_ms=config.working_ttl_ms,
     )
     composer = DisplayComposer(config)
     metrics = METRICS
@@ -205,42 +197,15 @@ def _cmd_doctor(args) -> int:
 
 # ---- install-claude ----
 def _statusline_helper_script() -> str:
-    return (
-        "#!/usr/bin/env bash\n"
-        "# claude-code-buddy-statusline: 读 stdin → POST adapter → exit 0\n"
-        "payload=$(cat)\n"
-        f'curl -s -m 2 -o /dev/null -X POST -H "Content-Type: application/json" \\\n'
-        f'  -d "$payload" http://{ADAPTER_HOST}:{ADAPTER_PORT}/v1/claude/statusline || true\n'
-        "exit 0\n"
-    )
+    return _install.statusline_helper_script()
 
 
 def _hook_helper_script() -> str:
-    return (
-        "#!/usr/bin/env bash\n"
-        "# claude-code-buddy-hook: 读 stdin → POST adapter → exit 0\n"
-        "payload=$(cat)\n"
-        f'curl -s -m 2 -o /dev/null -X POST -H "Content-Type: application/json" \\\n'
-        f'  -d "$payload" http://{ADAPTER_HOST}:{ADAPTER_PORT}/v1/claude/hook || true\n'
-        "exit 0\n"
-    )
+    return _install.hook_helper_script()
 
 
 def _settings_fragment() -> dict:
-    hooks: dict[str, list] = {}
-    for ev in HOOK_EVENTS:
-        entry = {"hooks": [{"type": "command", "command": str(HOOK_HELPER)}]}
-        if ev in HOOK_EVENTS_WITH_MATCHER:
-            entry["matcher"] = "*"
-        hooks[ev] = [entry]
-    return {
-        "statusLine": {
-            "type": "command",
-            "command": str(STATUSLINE_HELPER),
-            "refreshInterval": 2,
-        },
-        "hooks": hooks,
-    }
+    return _install.settings_fragment(STATUSLINE_HELPER, HOOK_HELPER)
 
 
 def _cmd_install_claude(args) -> int:
@@ -325,7 +290,10 @@ def _http_get(url: str):
 
 
 def _cmd_dump_state(args) -> int:
-    base = f"http://{ADAPTER_HOST}:{ADAPTER_PORT}"
+    from .config import AdapterConfig
+
+    config = AdapterConfig.load()
+    base = f"http://{config.http_host}:{config.http_port}"
     try:
         state = _http_get(f"{base}/v1/state")
         metrics = _http_get(f"{base}/v1/metrics").get("metrics", {})
