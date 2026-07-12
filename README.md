@@ -102,3 +102,7 @@ xattr -d com.apple.quarantine buddy-adapter
 
 - Python 3.11、pyserial、FastAPI、Uvicorn
 - serial 协议版本：`ccb-serial-v1`
+
+## 配套
+- firmware工程在：https://github.com/shiboxuan/claude_code_buddy
+- 可以使用m5stack stick s3进行编译和烧录
