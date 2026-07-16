@@ -80,19 +80,19 @@ def test_install_claude_settings_fragment_valid():
     json.dumps(frag)  # JSON 合法
 
 
-def test_install_claude_print_uses_installer_as_single_authority(monkeypatch):
-    monkeypatch.setattr(ic, "statusline_helper_script", lambda: "statusline-authority\n")
+def test_install_claude_print_uses_installer_as_single_authority(monkeypatch, tmp_path):
+    monkeypatch.setattr(ic, "statusline_helper_script", lambda sidecar_path: "statusline-authority\n")
     monkeypatch.setattr(ic, "hook_helper_script", lambda: "hook-authority\n")
     sentinel = {"statusLine": {"command": "authority"}, "hooks": {}}
     monkeypatch.setattr(ic, "settings_fragment", lambda statusline, hook: sentinel)
 
-    assert cli._statusline_helper_script() == "statusline-authority\n"
+    assert cli._statusline_helper_script(tmp_path) == "statusline-authority\n"
     assert cli._hook_helper_script() == "hook-authority\n"
     assert cli._settings_fragment() is sentinel
 
 
-def test_helper_scripts_exit_0_and_curl():
-    for script in (_statusline_helper_script(), _hook_helper_script()):
+def test_helper_scripts_exit_0_and_curl(tmp_path):
+    for script in (_statusline_helper_script(tmp_path), _hook_helper_script()):
         assert "exit 0" in script
         assert "curl" in script
         assert "|| true" in script  # curl 失败也继续

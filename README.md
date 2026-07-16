@@ -110,6 +110,8 @@ xattr -d com.apple.quarantine ~/buddy-adapter-macos-x86_64
 ~/buddy-adapter-macos-x86_64 install-claude --write --create
 ```
 
+> **statusLine 说明**：buddy 接管 statusLine 采集数据，但 helper 同时输出文本到状态栏，**不会让状态栏空白**；已有自定义 statusLine 时需 `--force-statusline`（原显示会被透传保留）。完整行为见下方「## statusLine 行为」小节。
+
 ### 4. 前台运行
 
 ```bash
@@ -272,6 +274,18 @@ launchctl bootout "gui/$(id -u)" \
 | debug_event_log | `BUDDY_DEBUG_EVENT_LOG` | `false` |
 | message_display_capture | `BUDDY_MESSAGE_DISPLAY_CAPTURE` | `false` |
 
+## statusLine 行为
+
+Claude Code 仅允许配置一个 `statusLine`，且会用该 command 的 **stdout 作为状态栏内容**（一旦配置即替换内置默认状态栏）。buddy 必须接管它来采集 `model` / `context_window` / `cost` 等 hooks 拿不到的数据；但 helper 不会让状态栏空白--它在 POST 给 adapter 的同时，把文本输出到 stdout：
+
+- **没有原 statusLine**：helper 从 payload 自生成一行，形如 `Opus 4.8 | ctx 45%`。
+- **已有自定义 statusLine**（如 ccusage 等）：`install-claude --write` 会检测到冲突并中断，提示加 `--force-statusline`。加该参数后，原 command 会被写入 sidecar 文件 `~/.claude/.claude-code-buddy-statusline.orig`，helper 在 POST 之后把 payload 透传给原 command 并输出其 stdout，**原有状态栏显示完整保留**。
+- **重复 `--write`**（已是 buddy statusLine）：幂等，不重复添加；sidecar 保持不动，继续透传首次记下的原 command。
+
+> 若你曾用旧版 `--force-statusline` 安装过、原 statusLine 已被丢弃：新版无法凭空恢复，需手动把原 command 填回 `settings.json` 的 `statusLine.command`，再 `--force-statusline` 重装，新版会把它存进 sidecar 透传。
+
+自生成分支依赖 `python3`；环境无 `python3` 时该分支输出空（透传分支不受影响）。helper 的 POST 始终 fire-and-forget 且 `exit 0`，不影响 adapter 采集，也不会被 Claude Code 判定为 hook 失败。
+
 ## 测试
 
 ```bash
@@ -307,7 +321,7 @@ pip install -e ".[build]"
 
 ## HTTP 框架
 
-使用 **FastAPI + Uvicorn**（异步，便于 P95 < 50ms 压测与集成测试）。statusLine / hook helper 脚本读取 stdin 后 POST 到 loopback endpoint，且无论 adapter 返回什么都 `exit 0`，避免被 Claude Code 判定为 hook 失败。
+使用 **FastAPI + Uvicorn**（异步，便于 P95 < 50ms 压测与集成测试）。statusLine / hook helper 脚本读取 stdin 后 POST 到 loopback endpoint，且无论 adapter 返回什么都 `exit 0`，避免被 Claude Code 判定为 hook 失败。statusLine helper 额外把文本输出到 stdout 供 Claude Code 显示状态栏（透传原 command 或自生成一行），详见「## statusLine 行为」。
 
 ## 技术栈
 

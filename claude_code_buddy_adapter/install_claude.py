@@ -11,7 +11,11 @@
 - **找不到配置文件**：默认中断并提示用 ``--claude-dir`` / ``--settings-path`` 指定位置，
   或加 ``--create`` 新建；不自作主张创建，避免搞乱环境。
 - **statusLine 冲突**：Claude Code 只允许一个 statusLine。检测到非 buddy 的 statusLine
-  时中断提示，需 ``--force-statusline`` 才覆盖。
+  时中断提示，需 ``--force-statusline`` 才覆盖；覆盖时原 command 存进 sidecar
+  (``.claude-code-buddy-statusline.orig``)，helper 透传其 stdout，原状态栏显示不丢失。
+- **statusLine helper 输出 stdout**：Claude Code 用 command 的 stdout 作状态栏内容。
+  helper 既把 payload POST 给 adapter，又输出文本给 Claude Code 显示（有原 command 就
+  透传，否则从 payload 自生成 ``model | ctx N%``），避免状态栏空白。
 """
 
 from __future__ import annotations
@@ -29,6 +33,8 @@ ADAPTER_PORT = 8765
 
 DEFAULT_CLAUDE_DIR = Path.home() / ".claude"
 STATUSLINE_HELPER_NAME = "claude-code-buddy-statusline"
+# sidecar：单行存「被 buddy 接管的原 statusLine command」。helper 读它决定透传原输出还是自生成。
+STATUSLINE_ORIG_NAME = ".claude-code-buddy-statusline.orig"
 HOOK_HELPER_NAME = "claude-code-buddy-hook"
 SETTINGS_NAME = "settings.json"
 
@@ -89,13 +95,45 @@ def resolve_settings_path(
 
 
 # ---- helper 脚本 ----
-def statusline_helper_script() -> str:
+# statusLine 自生成行用的 python 片段（无单引号，可整体塞进 bash 单引号字符串）。
+# 从 payload 取 model.display_name 与 context_window.used_percentage，拼成 "model | ctx N%"。
+_STATUSLINE_PY = (
+    "import sys, json\n"
+    "try:\n"
+    "    d = json.load(sys.stdin)\n"
+    '    m = (d.get("model") or {}).get("display_name") or (d.get("model") or {}).get("id") or ""\n'
+    '    cw = (d.get("context_window") or {}).get("used_percentage")\n'
+    '    parts = [p for p in [m, (f"ctx {cw:g}%" if cw is not None else None)] if p]\n'
+    '    print(" | ".join(parts) if parts else "")\n'
+    "except Exception:\n"
+    "    pass\n"
+)
+
+
+def statusline_helper_script(sidecar_path: Path) -> str:
+    """statusLine helper 脚本：读 stdin -> POST adapter -> 输出 statusline 文本 -> exit 0。
+
+    Claude Code 用 command 的 stdout 作为状态栏内容，故必须输出文本（否则状态栏空白）：
+    - sidecar 存在且非空（被 buddy 接管的原 statusLine command）-> 把 payload 透传给原
+      command，输出其 stdout；
+    - 否则 -> 从 payload 自生成一行（``model | ctx N%``）。
+    POST 仍 fire-and-forget，不影响 adapter 采集。
+    """
     return (
         "#!/usr/bin/env bash\n"
-        "# claude-code-buddy-statusline: 读 stdin -> POST adapter -> exit 0\n"
+        "# claude-code-buddy-statusline: 读 stdin -> POST adapter -> 输出 statusline 文本 -> exit 0\n"
         "payload=$(cat)\n"
         f'curl -s -m 2 -o /dev/null -X POST -H "Content-Type: application/json" \\\n'
         f'  -d "$payload" http://{ADAPTER_HOST}:{ADAPTER_PORT}/v1/claude/statusline || true\n'
+        f'ORIG_FILE="{sidecar_path}"\n'
+        'if [ -s "$ORIG_FILE" ]; then\n'
+        '  orig_cmd=$(cat "$ORIG_FILE")\n'
+        "  printf '%s' \"$payload\" | sh -c \"$orig_cmd\" 2>/dev/null || true\n"
+        "else\n"
+        "  printf '%s' \"$payload\" | python3 -c '\n"
+        + _STATUSLINE_PY
+        + "' 2>/dev/null || true\n"
+        "fi\n"
         "exit 0\n"
     )
 
@@ -124,11 +162,27 @@ def write_helpers(claude_dir: Path) -> tuple[Path, Path]:
     claude_dir.mkdir(parents=True, exist_ok=True)
     sl = claude_dir / STATUSLINE_HELPER_NAME
     hk = claude_dir / HOOK_HELPER_NAME
-    sl.write_text(statusline_helper_script(), encoding="utf-8")
+    sl.write_text(statusline_helper_script(claude_dir / STATUSLINE_ORIG_NAME), encoding="utf-8")
     hk.write_text(hook_helper_script(), encoding="utf-8")
     _chmod_exec(sl)
     _chmod_exec(hk)
     return sl, hk
+
+
+def write_statusline_orig(claude_dir: Path, orig_cmd: Optional[str]) -> None:
+    """写/清 sidecar：存被 buddy 接管的原 statusLine command。
+
+    ``orig_cmd`` 非空 -> 单行写入（helper 透传其 stdout，保留原状态栏显示）；
+    为空 -> 删除 sidecar（helper 走自生成分支）。文件不存在时删除静默忽略。
+    """
+    sidecar = Path(claude_dir) / STATUSLINE_ORIG_NAME
+    if not orig_cmd:
+        try:
+            sidecar.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    sidecar.write_text(orig_cmd, encoding="utf-8")
 
 
 # ---- settings 片段 ----
@@ -259,8 +313,9 @@ def apply_install(
 ) -> InstallResult:
     """执行 install-claude --write 的完整流程。
 
-    1. 写 helper 脚本；2. 定位 settings.json（找不到则按 create 决定中断/新建）；
-    3. 读现有 JSON；4. 备份；5. 追加合并 hooks + 处理 statusLine；6. 写回。
+    1. 定位 settings.json（找不到则按 create 决定中断/新建）；2. 读现有 JSON；
+    3. 备份；4. 追加合并 hooks + 处理 statusLine（冲突在此中断，不落 helper）；
+    5. 写 helper 脚本；6. 写 statusLine sidecar；7. 写回 settings.json。
     任何可预期失败抛 :class:`InstallError`。
     """
     cdir = resolve_claude_dir(claude_dir)
@@ -278,9 +333,7 @@ def apply_install(
         spath.write_text("{}", encoding="utf-8")
         created = True
 
-    # settings 就绪后再写 helper（找不到配置且无 --create 时完全不落任何文件）
-    sl_path, hk_path = write_helpers(cdir)
-
+    # 先读 settings：statusLine 冲突要在落 helper 前中断，避免遗留半成品 helper
     try:
         data = json.loads(spath.read_text(encoding="utf-8"))
     except Exception as e:  # noqa: BLE001
@@ -293,6 +346,10 @@ def apply_install(
 
     backup_path = None if created else backup_settings(spath)
 
+    # helper 绝对路径（fragment/merge 用；文件稍后落）
+    sl_path = cdir / STATUSLINE_HELPER_NAME
+    hk_path = cdir / HOOK_HELPER_NAME
+
     frag = settings_fragment(sl_path, hk_path)
     merged_hooks, added_events = merge_hooks(data.get("hooks"), frag["hooks"], hk_path)
     new_statusline, sl_action = merge_statusline(
@@ -301,9 +358,24 @@ def apply_install(
     if sl_action == "conflict":
         raise InstallError(
             f"settings.json 已有非 buddy 的 statusLine: {data.get('statusLine')!r}\n"
-            f"  Claude Code 只允许一个 statusLine。请用 --force-statusline 覆盖，"
+            f"  Claude Code 只允许一个 statusLine。请用 --force-statusline 覆盖"
+            f"（buddy 会把原 command 存进 sidecar 并透传其输出，不丢失原状态栏显示），"
             f"或手动合并。原文件未改动（备份: {backup_path}）。"
         )
+
+    # 冲突已排除，至此落 helper（找不到配置且无 --create 时上面已中断，不会到这里）
+    sl_path, hk_path = write_helpers(cdir)
+
+    # sidecar：force 覆盖非 buddy -> 保留原 command（透传其输出）；原无 statusLine -> 清空（自生成）；
+    # idempotent -> 不动（保留首次安装时记下的原 command）
+    existing_sl = data.get("statusLine")
+    if sl_action == "set":
+        if isinstance(existing_sl, dict) and existing_sl and not is_buddy_command(
+            existing_sl.get("command"), sl_path
+        ):
+            write_statusline_orig(cdir, existing_sl.get("command"))
+        else:
+            write_statusline_orig(cdir, None)
 
     data["hooks"] = merged_hooks
     data["statusLine"] = new_statusline

@@ -53,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_install.add_argument(
         "--force-statusline", action="store_true",
-        help="覆盖已有非 buddy 的 statusLine（Claude Code 仅允许一个 statusLine）",
+        help="覆盖已有非 buddy 的 statusLine；原 command 存进 sidecar 并透传其输出（不丢原显示）",
     )
     p_replay = sub.add_parser("replay", help="回放 JSONL 事件流到状态机")
     p_replay.add_argument("file", help="JSONL 事件文件")
@@ -196,8 +196,8 @@ def _cmd_doctor(args) -> int:
 
 
 # ---- install-claude ----
-def _statusline_helper_script() -> str:
-    return _install.statusline_helper_script()
+def _statusline_helper_script(cdir: Path) -> str:
+    return _install.statusline_helper_script(cdir / _install.STATUSLINE_ORIG_NAME)
 
 
 def _hook_helper_script() -> str:
@@ -215,7 +215,7 @@ def _cmd_install_claude(args) -> int:
         sl = cdir / _install.STATUSLINE_HELPER_NAME
         hk = cdir / _install.HOOK_HELPER_NAME
         print("# === {0} ===".format(sl))
-        print(_statusline_helper_script(), end="")
+        print(_statusline_helper_script(cdir), end="")
         print("# === {0} ===".format(hk))
         print(_hook_helper_script(), end="")
         print("# === settings.json 片段（手动合并，或用 --write 自动追加合并） ===")

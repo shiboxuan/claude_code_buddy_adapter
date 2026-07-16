@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -78,7 +79,12 @@ def test_is_buddy_command_non_match(tmp_path):
 def test_write_helpers_creates_executable(tmp_path):
     sl, hk = ic.write_helpers(tmp_path)
     assert sl.exists() and hk.exists()
-    assert "curl" in sl.read_text()
+    sl_text = sl.read_text()
+    assert "curl" in sl_text
+    # statusLine helper 必须输出 stdout：透传原 command + 自生成兜底
+    assert str(tmp_path / ic.STATUSLINE_ORIG_NAME) in sl_text  # 嵌入 sidecar 路径
+    assert "sh -c" in sl_text  # 透传分支
+    assert "python3" in sl_text  # 自生成分支
     assert "exit 0" in hk.read_text()
     assert os.access(sl, os.X_OK)
     assert os.access(hk, os.X_OK)
@@ -243,6 +249,8 @@ def test_apply_install_statusline_conflict_aborts(tmp_path):
     # 原文件未被改写
     data = json.loads(sp.read_text())
     assert data["statusLine"]["command"] == "/other/statusline"
+    # 冲突在落 helper 前中断，不遗留半成品 helper
+    assert not (tmp_path / ic.STATUSLINE_HELPER_NAME).exists()
 
 
 def test_apply_install_force_statusline(tmp_path):
@@ -257,6 +265,9 @@ def test_apply_install_force_statusline(tmp_path):
     assert ic.is_buddy_command(
         data["statusLine"]["command"], tmp_path / ic.STATUSLINE_HELPER_NAME
     )
+    # 原 command 存进 sidecar，helper 会透传其输出，不丢失原状态栏显示
+    sidecar = tmp_path / ic.STATUSLINE_ORIG_NAME
+    assert sidecar.read_text() == "/other/statusline"
 
 
 def test_apply_install_bad_json_aborts(tmp_path):
@@ -275,3 +286,92 @@ def test_apply_install_settings_path_outside_claude_dir(tmp_path):
     assert Path(r.settings_path) == sp
     data = json.loads(sp.read_text())
     assert "hooks" in data
+
+
+# ---- statusLine helper stdout + sidecar ----
+def test_statusline_helper_script_contains_passthrough_and_autogen(tmp_path):
+    sidecar = tmp_path / ic.STATUSLINE_ORIG_NAME
+    script = ic.statusline_helper_script(sidecar)
+    # POST 给 adapter 仍在
+    assert "/v1/claude/statusline" in script
+    # 透传分支：有 sidecar 时把 payload 喂给原 command
+    assert str(sidecar) in script
+    assert 'sh -c "$orig_cmd"' in script
+    # 自生成分支：无 sidecar 时从 payload 解析 model/ctx
+    assert "python3" in script
+    assert "context_window" in script
+    assert "used_percentage" in script
+
+
+def test_write_statusline_orig_writes_and_clears(tmp_path):
+    sidecar = tmp_path / ic.STATUSLINE_ORIG_NAME
+    ic.write_statusline_orig(tmp_path, "/orig/statusline")
+    assert sidecar.read_text() == "/orig/statusline"
+    # 传空 -> 删除
+    ic.write_statusline_orig(tmp_path, None)
+    assert not sidecar.exists()
+    # 不存在时删除静默（不抛）
+    ic.write_statusline_orig(tmp_path, None)
+
+
+def test_apply_install_no_statusline_clears_sidecar(tmp_path):
+    # 残留 sidecar
+    (tmp_path / ic.STATUSLINE_ORIG_NAME).write_text("/stale/orig", encoding="utf-8")
+    sp = tmp_path / ic.SETTINGS_NAME
+    sp.write_text(json.dumps({}), encoding="utf-8")
+    ic.apply_install(str(tmp_path))
+    # 原无 statusLine -> sidecar 被清空，helper 走自生成
+    assert not (tmp_path / ic.STATUSLINE_ORIG_NAME).exists()
+
+
+def test_apply_install_idempotent_keeps_sidecar(tmp_path):
+    # 首次 force 安装：原 statusLine=/orig，sidecar 写入 /orig
+    sp = tmp_path / ic.SETTINGS_NAME
+    sp.write_text(
+        json.dumps({"statusLine": {"type": "command", "command": "/orig/statusline"}}),
+        encoding="utf-8",
+    )
+    ic.apply_install(str(tmp_path), force_statusline=True)
+    sidecar = tmp_path / ic.STATUSLINE_ORIG_NAME
+    assert sidecar.read_text() == "/orig/statusline"
+    # 再次 install（idempotent，原 statusLine 已是 buddy）-> sidecar 保留 /orig
+    r2 = ic.apply_install(str(tmp_path))
+    assert r2.statusline_action == "idempotent"
+    assert sidecar.read_text() == "/orig/statusline"
+
+
+def test_statusline_helper_passthrough_orig_stdout(tmp_path):
+    """端到端：buddy helper 把 payload 透传给原 statusLine command，stdout = 原输出。"""
+    orig = tmp_path / "orig-statusline"
+    orig.write_text("#!/usr/bin/env bash\necho 'ORIG-LINE'\n", encoding="utf-8")
+    orig.chmod(0o755)
+    sp = tmp_path / ic.SETTINGS_NAME
+    sp.write_text(
+        json.dumps({"statusLine": {"type": "command", "command": str(orig)}}),
+        encoding="utf-8",
+    )
+    ic.apply_install(str(tmp_path), force_statusline=True)
+    buddy = tmp_path / ic.STATUSLINE_HELPER_NAME
+    # 跑 buddy helper（adapter 未启动时 POST 失败也 || true 继续）
+    out = subprocess.run(
+        [str(buddy)], input='{"model":{"display_name":"opus"}}',
+        capture_output=True, text=True,
+    )
+    assert out.returncode == 0
+    assert "ORIG-LINE" in out.stdout  # 透传了原 command 的输出
+
+
+def test_statusline_helper_autogen_stdout(tmp_path):
+    """端到端：无原 statusLine 时 buddy helper 自生成 ``model | ctx N%`` 行。"""
+    sp = tmp_path / ic.SETTINGS_NAME
+    sp.write_text(json.dumps({}), encoding="utf-8")
+    ic.apply_install(str(tmp_path))
+    assert not (tmp_path / ic.STATUSLINE_ORIG_NAME).exists()  # 走自生成
+    buddy = tmp_path / ic.STATUSLINE_HELPER_NAME
+    payload = '{"model":{"display_name":"Opus 4.8"},"context_window":{"used_percentage":45.2}}'
+    out = subprocess.run(
+        [str(buddy)], input=payload, capture_output=True, text=True,
+    )
+    assert out.returncode == 0
+    assert "Opus 4.8" in out.stdout
+    assert "ctx 45.2%" in out.stdout
