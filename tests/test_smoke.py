@@ -7,15 +7,15 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_release_version_is_0_1_1():
+def test_release_version_is_0_1_3():
     import claude_code_buddy_adapter
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 
-    assert claude_code_buddy_adapter.__version__ == "0.1.1"
-    assert pyproject["project"]["version"] == "0.1.1"
-    assert 'T="v0.1.1-ci.${{ github.run_number }}"' in workflow
+    assert claude_code_buddy_adapter.__version__ == "0.1.3"
+    assert pyproject["project"]["version"] == "0.1.3"
+    assert 'T="v0.1.3-ci.${{ github.run_number }}"' in workflow
 
 
 def test_import_package():

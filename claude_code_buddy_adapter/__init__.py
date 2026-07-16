@@ -4,6 +4,6 @@
 将设备展示快照下发给 StickS3 固件。
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.3"
 
 PROTOCOL_VERSION = "ccb-serial-v1"
