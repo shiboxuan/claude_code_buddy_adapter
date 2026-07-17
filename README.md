@@ -104,6 +104,28 @@ xattr -d com.apple.quarantine ~/buddy-adapter-macos-x86_64
 ~/buddy-adapter-macos-x86_64 install-claude --write
 ```
 
+安装器会先执行 `claude --version`，只写入该版本支持的 hook。当前兼容基线是
+Claude Code 2.1.71；`StopFailure` 从 2.1.78 起启用。Claude Code 降级后再次运行
+同一条 `--write` 命令，安装器会自动移除不再兼容、且由 buddy 写入的 hook；升级后
+再次运行则会自动恢复。用户自己的 hook 永远不会被自动删除，遇到不兼容的用户 hook
+时安装器会保留原文件并给出明确错误。
+
+如果 Claude Code 不在 `PATH`，指定实际可执行文件：
+
+```bash
+~/buddy-adapter-macos-x86_64 install-claude --write \
+  --claude-command /absolute/path/to/claude
+```
+
+只有在自动检测不可用、且已经自行确认版本时，才使用显式覆盖：
+
+```bash
+~/buddy-adapter-macos-x86_64 install-claude --write --claude-version 2.1.71
+```
+
+无法检测版本时安装器会停止且不写配置，避免猜测 schema 后导致 Claude Code 跳过整个
+`settings.json`。
+
 如果 `~/.claude/settings.json` 还不存在，按命令提示增加 `--create`：
 
 ```bash

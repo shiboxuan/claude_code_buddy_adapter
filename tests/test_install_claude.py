@@ -10,11 +10,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 
 from claude_code_buddy_adapter import install_claude as ic
+
+_REAL_DETECT_CLAUDE_VERSION = ic.detect_claude_version
 
 EXPECTED_HOOK_EVENTS = {
     "SessionStart",
@@ -31,8 +34,60 @@ EXPECTED_HOOK_EVENTS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _default_supported_claude(monkeypatch):
+    """现有安装测试固定在支持全部事件的版本，避免依赖测试机环境。"""
+    monkeypatch.setattr(ic, "detect_claude_version", lambda command="claude": "2.1.78")
+
+
 def test_hook_events_cover_user_attention_lifecycle():
     assert set(ic.HOOK_EVENTS) == EXPECTED_HOOK_EVENTS
+
+
+# ---- Claude Code 版本与 hook capabilities ----
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("2.1.71 (Claude Code)", (2, 1, 71)),
+        ("claude version 2.1.78-beta.1", (2, 1, 78)),
+        ("not-a-version", None),
+        (None, None),
+    ],
+)
+def test_parse_claude_version(raw, expected):
+    assert ic.parse_claude_version(raw) == expected
+
+
+def test_detect_claude_version_from_command(monkeypatch):
+    monkeypatch.setattr(
+        ic.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout="2.1.78 (Claude Code)\n", stderr=""
+        ),
+    )
+    assert _REAL_DETECT_CLAUDE_VERSION("/custom/claude") == "2.1.78"
+
+
+def test_detect_claude_version_rejects_failed_command(monkeypatch):
+    monkeypatch.setattr(
+        ic.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=1, stdout="2.1.78", stderr="failed"
+        ),
+    )
+    assert _REAL_DETECT_CLAUDE_VERSION("claude") is None
+
+
+def test_hook_events_stop_failure_version_boundary():
+    assert "StopFailure" not in ic.hook_events_for_claude_version("2.1.77")
+    assert "StopFailure" in ic.hook_events_for_claude_version("2.1.78")
+
+
+def test_resolve_claude_version_rejects_unsupported_baseline():
+    with pytest.raises(ic.InstallError, match="兼容基线"):
+        ic.resolve_claude_version("2.1.70")
 
 
 # ---- 路径解析 ----
@@ -125,6 +180,27 @@ def test_merge_hooks_idempotent(tmp_path):
     assert added2 == []
     for ev in ic.HOOK_EVENTS:
         assert len(merged2[ev]) == len(merged1[ev]) == 1
+
+
+def test_remove_buddy_hooks_preserves_user_hook_in_same_group(tmp_path):
+    hk = tmp_path / ic.HOOK_HELPER_NAME
+    existing = {
+        "StopFailure": [
+            {
+                "hooks": [
+                    {"type": "command", "command": str(hk)},
+                    {"type": "command", "command": "/user/stop-failure"},
+                ]
+            }
+        ],
+        "Stop": [{"hooks": [{"type": "command", "command": str(hk)}]}],
+    }
+    merged, removed = ic.remove_buddy_hooks(existing, ["StopFailure"], hk)
+    assert removed == ["StopFailure"]
+    assert merged["StopFailure"][0]["hooks"] == [
+        {"type": "command", "command": "/user/stop-failure"}
+    ]
+    assert merged["Stop"] == existing["Stop"]
 
 
 # ---- merge_statusline ----
@@ -236,6 +312,49 @@ def test_apply_install_idempotent(tmp_path):
     data = json.loads((tmp_path / ic.SETTINGS_NAME).read_text())
     for ev in ic.HOOK_EVENTS:
         assert len(data["hooks"][ev]) == 1  # 没重复添加
+
+
+def test_apply_install_downgrade_removes_buddy_stop_failure(tmp_path):
+    ic.apply_install(str(tmp_path), create=True, claude_version="2.1.78")
+    result = ic.apply_install(str(tmp_path), claude_version="2.1.71")
+    data = json.loads((tmp_path / ic.SETTINGS_NAME).read_text())
+    assert "StopFailure" not in data["hooks"]
+    assert result.claude_version == "2.1.71"
+    assert result.removed_hook_events == ["StopFailure"]
+    assert result.skipped_hook_events == ["StopFailure"]
+
+
+def test_apply_install_upgrade_restores_stop_failure(tmp_path):
+    ic.apply_install(str(tmp_path), create=True, claude_version="2.1.71")
+    result = ic.apply_install(str(tmp_path), claude_version="2.1.78")
+    data = json.loads((tmp_path / ic.SETTINGS_NAME).read_text())
+    assert "StopFailure" in data["hooks"]
+    assert "StopFailure" in result.added_hook_events
+    assert result.removed_hook_events == []
+    assert result.skipped_hook_events == []
+
+
+def test_apply_install_preserves_unsupported_user_hook_and_aborts(tmp_path):
+    sp = tmp_path / ic.SETTINGS_NAME
+    original = {
+        "hooks": {
+            "StopFailure": [
+                {"hooks": [{"type": "command", "command": "/user/stop-failure"}]}
+            ]
+        }
+    }
+    sp.write_text(json.dumps(original), encoding="utf-8")
+    with pytest.raises(ic.InstallError, match="不会擅自删除"):
+        ic.apply_install(str(tmp_path), claude_version="2.1.71")
+    assert json.loads(sp.read_text()) == original
+    assert not (tmp_path / ic.HOOK_HELPER_NAME).exists()
+
+
+def test_apply_install_unknown_version_fails_before_writing(monkeypatch, tmp_path):
+    monkeypatch.setattr(ic, "detect_claude_version", lambda command="claude": None)
+    with pytest.raises(ic.InstallError, match="无法通过"):
+        ic.apply_install(str(tmp_path), create=True)
+    assert not (tmp_path / ic.SETTINGS_NAME).exists()
 
 
 def test_apply_install_statusline_conflict_aborts(tmp_path):

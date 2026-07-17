@@ -55,6 +55,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--force-statusline", action="store_true",
         help="覆盖已有非 buddy 的 statusLine；原 command 存进 sidecar 并透传其输出（不丢原显示）",
     )
+    p_install.add_argument(
+        "--claude-command", default="claude",
+        help="用于自动检测版本的 Claude Code 可执行文件（默认: claude）",
+    )
+    p_install.add_argument(
+        "--claude-version", default=None,
+        help="显式指定 Claude Code 版本并跳过自动检测（例如 2.1.71）",
+    )
     p_replay = sub.add_parser("replay", help="回放 JSONL 事件流到状态机")
     p_replay.add_argument("file", help="JSONL 事件文件")
     sub.add_parser("dump-state", help="输出当前 sessions / focus / counts / metrics")
@@ -204,13 +212,23 @@ def _hook_helper_script() -> str:
     return _install.hook_helper_script()
 
 
-def _settings_fragment() -> dict:
-    return _install.settings_fragment(STATUSLINE_HELPER, HOOK_HELPER)
+def _settings_fragment(hook_events=None) -> dict:
+    if hook_events is None:
+        return _install.settings_fragment(STATUSLINE_HELPER, HOOK_HELPER)
+    return _install.settings_fragment(STATUSLINE_HELPER, HOOK_HELPER, hook_events)
 
 
 def _cmd_install_claude(args) -> int:
     # 默认（无 --write）或显式 --print：只打印配置片段，不写文件
     if not args.write:
+        try:
+            claude_version = _install.resolve_claude_version(
+                args.claude_version, args.claude_command
+            )
+            hook_events = _install.hook_events_for_claude_version(claude_version)
+        except _install.InstallError as e:
+            print(f"install-claude: {e}", file=sys.stderr)
+            return 2
         cdir = _install.resolve_claude_dir(args.claude_dir)
         sl = cdir / _install.STATUSLINE_HELPER_NAME
         hk = cdir / _install.HOOK_HELPER_NAME
@@ -218,8 +236,17 @@ def _cmd_install_claude(args) -> int:
         print(_statusline_helper_script(cdir), end="")
         print("# === {0} ===".format(hk))
         print(_hook_helper_script(), end="")
-        print("# === settings.json 片段（手动合并，或用 --write 自动追加合并） ===")
-        print(json.dumps(_install.settings_fragment(sl, hk), indent=2, ensure_ascii=False))
+        print(
+            f"# === settings.json 片段（Claude Code {claude_version}；"
+            f"手动合并，或用 --write 自动追加合并） ==="
+        )
+        print(
+            json.dumps(
+                _install.settings_fragment(sl, hk, hook_events),
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
         return 0
 
     # --write：写 helper + 追加合并 settings.json（先备份；幂等）
@@ -229,6 +256,8 @@ def _cmd_install_claude(args) -> int:
             settings_path=args.settings_path,
             create=args.create,
             force_statusline=args.force_statusline,
+            claude_version=args.claude_version,
+            claude_command=args.claude_command,
         )
     except _install.InstallError as e:
         print(f"install-claude: {e}", file=sys.stderr)

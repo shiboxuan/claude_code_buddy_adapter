@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-code-buddy-adapter"
-version = "0.1.3"
+version = "0.1.4"
 description = "Claude Code Buddy 桌宠 adapter：聚合 Claude Code 事件并驱动 StickS3 设备显示"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -22,11 +22,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 ADAPTER_HOST = "127.0.0.1"
 ADAPTER_PORT = 8765
@@ -46,6 +48,16 @@ HOOK_EVENTS = [
 ]
 HOOK_EVENTS_WITH_MATCHER = {"PreToolUse", "PostToolUse"}
 
+# 2.1.71 是当前 capability map 的兼容基线；StopFailure 从 2.1.78 起进入
+# Claude Code settings schema。新增版本门控 hook 时只需在这里声明最低版本。
+MIN_SUPPORTED_CLAUDE_VERSION = (2, 1, 71)
+HOOK_MIN_CLAUDE_VERSION = {
+    **{event: MIN_SUPPORTED_CLAUDE_VERSION for event in HOOK_EVENTS},
+    "StopFailure": (2, 1, 78),
+}
+CLAUDE_VERSION_TIMEOUT_S = 5
+_CLAUDE_VERSION_RE = re.compile(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?!\d)")
+
 
 class InstallError(Exception):
     """安装流程中可预期的失败（配置缺失/冲突/解析失败），CLI 层据此返回非 0。"""
@@ -57,7 +69,10 @@ class InstallResult:
     settings_path: str
     statusline_helper: str
     hook_helper: str
+    claude_version: str = ""
     added_hook_events: list[str] = field(default_factory=list)
+    removed_hook_events: list[str] = field(default_factory=list)
+    skipped_hook_events: list[str] = field(default_factory=list)
     statusline_action: str = ""  # "set" | "idempotent" | "kept_existing"
     backup_path: Optional[str] = None
     created: bool = False
@@ -68,11 +83,87 @@ class InstallResult:
             "settings_path": self.settings_path,
             "statusline_helper": self.statusline_helper,
             "hook_helper": self.hook_helper,
+            "claude_version": self.claude_version,
             "added_hook_events": self.added_hook_events,
+            "removed_hook_events": self.removed_hook_events,
+            "skipped_hook_events": self.skipped_hook_events,
             "statusline_action": self.statusline_action,
             "backup_path": self.backup_path,
             "created": self.created,
         }
+
+
+# ---- Claude Code 版本与 hook capabilities ----
+def parse_claude_version(value: Any) -> Optional[tuple[int, int, int]]:
+    """从 ``2.1.78 (Claude Code)`` 等输出中提取三段版本号。"""
+    if not isinstance(value, str):
+        return None
+    match = _CLAUDE_VERSION_RE.search(value)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def format_claude_version(version: tuple[int, int, int]) -> str:
+    return ".".join(str(part) for part in version)
+
+
+def detect_claude_version(claude_command: str = "claude") -> Optional[str]:
+    """执行 ``claude --version``，成功时返回规范化三段版本号。"""
+    try:
+        result = subprocess.run(
+            [claude_command, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=CLAUDE_VERSION_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    parsed = parse_claude_version(f"{result.stdout}\n{result.stderr}")
+    return format_claude_version(parsed) if parsed else None
+
+
+def resolve_claude_version(
+    version_override: Optional[str] = None, claude_command: str = "claude"
+) -> str:
+    """解析显式版本或自动探测；无法可靠判断时 fail closed。"""
+    if version_override is not None:
+        parsed = parse_claude_version(version_override)
+        if parsed is None:
+            raise InstallError(
+                f"无法解析 --claude-version: {version_override!r}；请使用类似 2.1.78 的版本号。"
+            )
+    else:
+        detected = detect_claude_version(claude_command)
+        parsed = parse_claude_version(detected)
+        if parsed is None:
+            raise InstallError(
+                f"无法通过 {claude_command!r} --version 检测 Claude Code 版本；"
+                f"请用 --claude-command <path> 指定可执行文件，或用 "
+                f"--claude-version <version> 显式指定。"
+            )
+    if parsed < MIN_SUPPORTED_CLAUDE_VERSION:
+        minimum = format_claude_version(MIN_SUPPORTED_CLAUDE_VERSION)
+        raise InstallError(
+            f"Claude Code {format_claude_version(parsed)} 低于当前 adapter 的兼容基线 "
+            f"{minimum}；为避免写入该版本不支持的 hook，未修改配置。"
+        )
+    return format_claude_version(parsed)
+
+
+def hook_events_for_claude_version(version: str) -> list[str]:
+    """返回目标 Claude Code 版本可接受的 buddy hook 事件。"""
+    parsed = parse_claude_version(version)
+    if parsed is None:
+        raise InstallError(f"无法解析 Claude Code 版本: {version!r}")
+    return [
+        event
+        for event in HOOK_EVENTS
+        if parsed >= HOOK_MIN_CLAUDE_VERSION[event]
+    ]
 
 
 # ---- 路径解析 ----
@@ -186,10 +277,14 @@ def write_statusline_orig(claude_dir: Path, orig_cmd: Optional[str]) -> None:
 
 
 # ---- settings 片段 ----
-def settings_fragment(statusline_path: Path, hook_path: Path) -> dict[str, Any]:
+def settings_fragment(
+    statusline_path: Path,
+    hook_path: Path,
+    hook_events: Optional[Sequence[str]] = None,
+) -> dict[str, Any]:
     """构造 buddy 的 statusLine + hooks 片段（command 用绝对路径）。"""
     hooks: dict[str, list] = {}
-    for ev in HOOK_EVENTS:
+    for ev in HOOK_EVENTS if hook_events is None else hook_events:
         entry: dict[str, Any] = {"hooks": [{"type": "command", "command": str(hook_path)}]}
         if ev in HOOK_EVENTS_WITH_MATCHER:
             entry["matcher"] = "*"
@@ -268,6 +363,49 @@ def merge_hooks(
     return merged, added
 
 
+def remove_buddy_hooks(
+    existing: Any, event_names: Sequence[str], hook_helper: Path
+) -> tuple[dict[str, list], list[str]]:
+    """从指定事件中只移除 buddy 自己的 command，保留所有用户 hook。"""
+    merged: dict[str, list] = dict(existing) if isinstance(existing, dict) else {}
+    removed: list[str] = []
+    for event in event_names:
+        entries = merged.get(event)
+        if not isinstance(entries, list):
+            continue
+        new_entries: list[Any] = []
+        event_removed = False
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                new_entries.append(entry)
+                continue
+            hooks = entry["hooks"]
+            kept_hooks = [
+                hook
+                for hook in hooks
+                if not (
+                    isinstance(hook, dict)
+                    and is_buddy_command(hook.get("command"), hook_helper)
+                )
+            ]
+            if len(kept_hooks) == len(hooks):
+                new_entries.append(entry)
+                continue
+            event_removed = True
+            if kept_hooks:
+                new_entry = dict(entry)
+                new_entry["hooks"] = kept_hooks
+                new_entries.append(new_entry)
+        if not event_removed:
+            continue
+        removed.append(event)
+        if new_entries:
+            merged[event] = new_entries
+        else:
+            merged.pop(event, None)
+    return merged, removed
+
+
 def merge_statusline(
     existing: Any,
     fragment_statusline: dict[str, Any],
@@ -310,6 +448,8 @@ def apply_install(
     settings_path: Optional[str] = None,
     create: bool = False,
     force_statusline: bool = False,
+    claude_version: Optional[str] = None,
+    claude_command: str = "claude",
 ) -> InstallResult:
     """执行 install-claude --write 的完整流程。
 
@@ -318,6 +458,12 @@ def apply_install(
     5. 写 helper 脚本；6. 写 statusLine sidecar；7. 写回 settings.json。
     任何可预期失败抛 :class:`InstallError`。
     """
+    resolved_version = resolve_claude_version(claude_version, claude_command)
+    active_hook_events = hook_events_for_claude_version(resolved_version)
+    skipped_hook_events = [
+        event for event in HOOK_EVENTS if event not in active_hook_events
+    ]
+
     cdir = resolve_claude_dir(claude_dir)
     spath = resolve_settings_path(claude_dir, settings_path)
 
@@ -350,8 +496,23 @@ def apply_install(
     sl_path = cdir / STATUSLINE_HELPER_NAME
     hk_path = cdir / HOOK_HELPER_NAME
 
-    frag = settings_fragment(sl_path, hk_path)
-    merged_hooks, added_events = merge_hooks(data.get("hooks"), frag["hooks"], hk_path)
+    compatible_hooks, removed_events = remove_buddy_hooks(
+        data.get("hooks"), skipped_hook_events, hk_path
+    )
+    remaining_unsupported = [
+        event for event in skipped_hook_events if event in compatible_hooks
+    ]
+    if remaining_unsupported:
+        names = ", ".join(remaining_unsupported)
+        raise InstallError(
+            f"Claude Code {resolved_version} 不支持这些 hook，但 settings.json 中含有"
+            f"非 buddy 配置，adapter 不会擅自删除: {names}。\n"
+            f"  请手动迁移这些 hook、升级 Claude Code，或确认版本检测无误后用 "
+            f"--claude-version 覆盖。原文件未改动（备份: {backup_path}）。"
+        )
+
+    frag = settings_fragment(sl_path, hk_path, active_hook_events)
+    merged_hooks, added_events = merge_hooks(compatible_hooks, frag["hooks"], hk_path)
     new_statusline, sl_action = merge_statusline(
         data.get("statusLine"), frag["statusLine"], sl_path, force_statusline
     )
@@ -388,7 +549,10 @@ def apply_install(
         settings_path=str(spath),
         statusline_helper=str(sl_path),
         hook_helper=str(hk_path),
+        claude_version=resolved_version,
         added_hook_events=added_events,
+        removed_hook_events=removed_events,
+        skipped_hook_events=skipped_hook_events,
         statusline_action=sl_action,
         backup_path=str(backup_path) if backup_path else None,
         created=created,
