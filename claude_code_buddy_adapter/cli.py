@@ -111,7 +111,7 @@ def _make_transport_factory(config):
 
 def _build_runtime(config):
     from .device.bridge import SerialBridge
-    from .device.fake_transport import FakeSerialTransport
+    from .device.fake_transport import NullTransport
     from .metrics import METRICS
     from .receiver.http_server import create_app
     from .session.snapshot import DisplayComposer
@@ -130,9 +130,10 @@ def _build_runtime(config):
     except Exception:
         transport = None
     if transport is None:
-        # 无设备：fallback fake，不启用自动重连（ADP-P5 行为）
-        transport = FakeSerialTransport()
-        transport_factory = None
+        # 无设备：用 NullTransport 占位（is_open=False），保留 factory
+        # 让 bridge._reconnect_loop 周期重新 discover，设备就绪后自动连上
+        transport = NullTransport()
+        transport_factory = factory
     else:
         transport_factory = factory
     bridge = SerialBridge(

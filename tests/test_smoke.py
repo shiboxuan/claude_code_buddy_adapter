@@ -13,9 +13,9 @@ def test_release_version_is_0_1_4():
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 
-    assert claude_code_buddy_adapter.__version__ == "0.1.4"
-    assert pyproject["project"]["version"] == "0.1.4"
-    assert 'T="v0.1.4-ci.${{ github.run_number }}"' in workflow
+    assert claude_code_buddy_adapter.__version__ == "0.1.5"
+    assert pyproject["project"]["version"] == "0.1.5"
+    assert 'T="v0.1.5-ci.${{ github.run_number }}"' in workflow
 
 
 def test_import_package():

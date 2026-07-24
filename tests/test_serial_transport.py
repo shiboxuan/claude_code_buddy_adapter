@@ -11,7 +11,7 @@ from claude_code_buddy_adapter.claude.event_model import ClaudeEvent
 from claude_code_buddy_adapter.claude.reducer import SessionState
 from claude_code_buddy_adapter.config import AdapterConfig
 from claude_code_buddy_adapter.device.bridge import SerialBridge
-from claude_code_buddy_adapter.device.fake_transport import FakeSerialTransport
+from claude_code_buddy_adapter.device.fake_transport import FakeSerialTransport, NullTransport
 from claude_code_buddy_adapter.device.protocol import (
     PROTOCOL_VERSION,
     assert_within_max,
@@ -322,3 +322,62 @@ def test_device_connected_gauge_tracks_handshake():
     fake.close()
     bridge._on_disconnect()
     assert metrics.get("device_connected") == 0
+
+
+# ---- fallback 重连（启动时无设备 / open 后未握手）----
+
+
+def test_fallback_reconnects_when_device_appears_late():
+    """启动时无设备（NullTransport 占位 + 保留 factory），设备后出现 -> 自动连上握手。"""
+    fake = FakeSerialTransport()
+    store = SessionStore()
+    config = AdapterConfig()
+    calls = {"n": 0}
+
+    def factory():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return None  # 前几次设备未就绪
+        fake.open()
+        return fake
+
+    bridge = SerialBridge(
+        NullTransport(), store, DisplayComposer(config), config,
+        metrics=Metrics(), reconnect_interval=0.05, heartbeat_interval=99.0,
+        transport_factory=factory,
+    )
+    bridge.start()
+    try:
+        time.sleep(0.3)  # > 多个 reconnect_interval
+        assert bridge._transport is fake  # NullTransport 已被替换为真 transport
+        bridge.handle_frame(_hello())  # firmware 主动发 hello
+        assert bridge.is_device_connected
+    finally:
+        bridge.stop()
+
+
+def test_open_but_no_handshake_reconnects_after_timeout():
+    """open 后超 handshake_timeout 未握手 -> close 当前 transport 重新 factory。"""
+    fake = FakeSerialTransport()
+    store = SessionStore()
+    config = AdapterConfig()
+    calls = {"n": 0}
+
+    def factory():
+        calls["n"] += 1
+        fake.open()
+        return fake
+
+    bridge = SerialBridge(
+        fake, store, DisplayComposer(config), config,
+        metrics=Metrics(), reconnect_interval=0.05, heartbeat_interval=99.0,
+        handshake_timeout=0.1,  # 短超时加速
+        transport_factory=factory,
+    )
+    bridge.start()
+    try:
+        time.sleep(0.3)  # > 多个 handshake_timeout
+        assert not bridge.handshook  # 始终未握手
+        assert calls["n"] >= 2  # 超时后重新 factory
+    finally:
+        bridge.stop()

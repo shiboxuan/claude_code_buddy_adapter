@@ -12,6 +12,7 @@ import time
 from typing import Callable, Optional
 
 from .. import __version__ as ADAPTER_VERSION
+from ..logging_setup import get_logger
 from .alert import AlertTracker
 from .protocol import (
     PROTOCOL_VERSION,
@@ -23,6 +24,8 @@ from .protocol import (
     make_ping,
     parse_frame,
 )
+
+_log = get_logger("app")
 
 
 class SerialBridge:
@@ -39,6 +42,7 @@ class SerialBridge:
         poll_interval: float = 0.05,
         cleanup_interval: float = 1.0,
         transport_factory: Optional[Callable[[], object]] = None,
+        handshake_timeout: float = 15.0,
     ) -> None:
         self._transport = transport
         self._store = store
@@ -59,6 +63,8 @@ class SerialBridge:
         self._cleanup_thread: Optional[threading.Thread] = None
         self._reconnect_thread: Optional[threading.Thread] = None
         self._handshook = False
+        self._handshake_timeout = handshake_timeout
+        self._last_connect_attempt: float = 0.0
         self._last_snapshot_revision = -1
 
     # ---- 生命周期 ----
@@ -66,6 +72,14 @@ class SerialBridge:
         self._stop.clear()
         if not self._transport.is_open:
             self._transport.open()
+        self._last_connect_attempt = time.monotonic()
+        if self._transport_factory is not None and not self._transport.is_open:
+            _log.info(
+                "serial: 启动时无设备，占位 transport，将每 %.1fs 重新发现端口",
+                self._reconnect_interval,
+            )
+        else:
+            _log.info("serial: 启动，transport is_open=%s", self._transport.is_open)
         self._read_thread = threading.Thread(
             target=self._read_loop, daemon=True, name="buddy-serial-read")
         self._read_thread.start()
@@ -137,6 +151,7 @@ class SerialBridge:
         # 未知类型忽略（§6）
 
     def _on_disconnect(self) -> None:
+        _log.info("serial: 断开，等待重连")
         with self._lock:
             self._handshook = False
             self._alert.reset()  # 重连后 connected 可再发
@@ -145,6 +160,11 @@ class SerialBridge:
     # ---- 握手（§4.4）----
     def _handle_hello(self, frame: dict) -> None:
         ok = frame.get("protocol") == PROTOCOL_VERSION
+        _log.info(
+            "serial: hello device=%s fw=%s protocol=%s match=%s",
+            frame.get("device"), frame.get("fw_version"),
+            frame.get("protocol"), ok,
+        )
         with self._lock:
             self._send(make_hello_ack(ADAPTER_VERSION, self._seq.next(), ok))
             if ok:
@@ -215,21 +235,35 @@ class SerialBridge:
 
     # ---- 断线重连（§6 断线恢复 / INT-5）----
     def _reconnect_loop(self) -> None:
-        """断开后周期重新 discover/open 端口。
+        """未连或未握手时周期重新 discover/open 端口。
 
-        断开检测在 transport 层（write/read 失败 -> is_open=False）；本循环检测到断开后
-        调 transport_factory 重建已 open 的 transport 并替换，read_loop 下一轮自动切到新
-        transport 读取 firmware 主动重发的 hello，由 _handle_hello 重新握手 + 发全量 snapshot。
-        无 transport_factory（fake/测试场景）时不自动重连。
+        三种情况需要重连：
+        - transport 未 open（USB 断开 / 初始 NullTransport 占位 / 启动时设备未就绪）
+        - transport open 但超 handshake_timeout 仍未握手（设备复位后 hello 没来 / 协议不符）
+        已连且握手则跳过。无 transport_factory（纯 fake/测试）时不重连。
         """
         while not self._stop.is_set():
             if self._stop.wait(self._reconnect_interval):
                 break
             if self._transport_factory is None:
                 continue
+            now = time.monotonic()
             with self._lock:
-                if self._transport.is_open:
-                    continue  # 端口仍在（等 hello 或已连），不重连
+                ts = self._transport
+                handshook = self._handshook
+                if handshook and ts.is_open:
+                    continue  # 已连，不重连
+                if ts.is_open and (now - self._last_connect_attempt) < self._handshake_timeout:
+                    continue  # open 着等 hello 中，给设备复位+hello 宽限期
+                if ts.is_open:
+                    # open 但超时未握手：关掉重来
+                    _log.info(
+                        "serial: open 后 %.1fs 未握手，关闭重连", self._handshake_timeout,
+                    )
+                    try:
+                        ts.close()
+                    except Exception:
+                        pass
             try:
                 new_transport = self._transport_factory()
             except Exception:
@@ -239,12 +273,14 @@ class SerialBridge:
             with self._lock:
                 old = self._transport
                 self._transport = new_transport
+                self._last_connect_attempt = time.monotonic()
             if old is not new_transport:
                 try:
                     old.close()  # 旧的通常已断开（_serial=None），此处 no-op；非同一对象才关
                 except Exception:
                     pass
             self._inc("serial_reconnect_total")
+            _log.info("serial: 重连成功，等待 hello")
 
     # ---- 发送 ----
     def _send(self, frame: dict) -> None:

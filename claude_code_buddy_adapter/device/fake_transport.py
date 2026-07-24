@@ -57,3 +57,31 @@ class FakeSerialTransport:
             except queue.Empty:
                 break
         return out
+
+
+class NullTransport:
+    """占位 transport：表示"无设备，等待 reconnect loop 发现真设备"。
+
+    is_open 恒 False：bridge._reconnect_loop 据此判定需要重新 discover/open，
+    不会像 FakeSerialTransport（is_open=True）那样让重连循环误判"端口仍在"而跳过。
+    - open() 是 no-op（不抛），让 bridge.start() 的初始 ``if not is_open: open()`` 不炸；
+    - write_frame 抛 ConnectionError，与 SerialTransport 未 open 时一致，
+      由 bridge._send 的 try/except 兜住并计 snapshot_send_failure_total；
+    - read_line 返 None。
+    """
+
+    @property
+    def is_open(self) -> bool:
+        return False
+
+    def open(self) -> None:
+        pass  # no-op：保持未连，reconnect_loop 负责 discover 真设备
+
+    def write_frame(self, frame: dict) -> None:
+        raise ConnectionError("null transport: not connected")
+
+    def read_line(self) -> Optional[str]:
+        return None
+
+    def close(self) -> None:
+        pass
