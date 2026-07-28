@@ -112,15 +112,22 @@ def _make_transport_factory(config):
 def _build_runtime(config):
     from .device.bridge import SerialBridge
     from .device.fake_transport import NullTransport
+    from .logging_setup import DEFAULT_LOG_DIR
     from .metrics import METRICS
     from .receiver.http_server import create_app
     from .session.snapshot import DisplayComposer
     from .session.store import SessionStore
 
+    # debug_event_log 开启时，把每个到达 event 落 events.jsonl（hook_event_name/session_id/
+    # 结果 state/时间），用于离线定性 hook 到达与状态转换时序（诊断 working 延迟）。
+    # store._write_debug 已实现，只是 cli 此前没把 debug_jsonl 传进去。
+    log_dir = Path(config.log_dir) if config.log_dir else DEFAULT_LOG_DIR
+    debug_jsonl = str(log_dir / "events.jsonl") if config.debug_event_log else None
     store = SessionStore(
         done_ttl_ms=config.done_ttl_ms,
         session_ttl_ms=config.session_ttl_ms,
         working_ttl_ms=config.working_ttl_ms,
+        debug_jsonl=debug_jsonl,
     )
     composer = DisplayComposer(config)
     metrics = METRICS

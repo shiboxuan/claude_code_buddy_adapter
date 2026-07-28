@@ -214,8 +214,8 @@ def statusline_helper_script(sidecar_path: Path) -> str:
         "#!/usr/bin/env bash\n"
         "# claude-code-buddy-statusline: 读 stdin -> POST adapter -> 输出 statusline 文本 -> exit 0\n"
         "payload=$(cat)\n"
-        f'curl -s -m 2 -o /dev/null -X POST -H "Content-Type: application/json" \\\n'
-        f'  -d "$payload" http://{ADAPTER_HOST}:{ADAPTER_PORT}/v1/claude/statusline || true\n'
+        f'printf %s "$payload" | curl -s -m 2 -o /dev/null -X POST -H "Content-Type: application/json" \\\n'
+        f'  --data-binary @- http://{ADAPTER_HOST}:{ADAPTER_PORT}/v1/claude/statusline || true\n'
         f'ORIG_FILE="{sidecar_path}"\n'
         'if [ -s "$ORIG_FILE" ]; then\n'
         '  orig_cmd=$(cat "$ORIG_FILE")\n'
@@ -234,8 +234,8 @@ def hook_helper_script() -> str:
         "#!/usr/bin/env bash\n"
         "# claude-code-buddy-hook: 读 stdin -> POST adapter -> exit 0\n"
         "payload=$(cat)\n"
-        f'curl -s -m 2 -o /dev/null -X POST -H "Content-Type: application/json" \\\n'
-        f'  -d "$payload" http://{ADAPTER_HOST}:{ADAPTER_PORT}/v1/claude/hook || true\n'
+        f'printf %s "$payload" | curl -s -m 2 -o /dev/null -X POST -H "Content-Type: application/json" \\\n'
+        f'  --data-binary @- http://{ADAPTER_HOST}:{ADAPTER_PORT}/v1/claude/hook || true\n'
         "exit 0\n"
     )
 
