@@ -60,6 +60,14 @@ def create_app(
     def _device_connected() -> bool:
         return bool(bridge is not None and bridge.is_device_connected)
 
+    def _inc_received() -> None:
+        """收到一个合法 event：累加 events_received_total（供 dump-state / /v1/metrics 诊断 hook 是否到达）。"""
+        if metrics is not None:
+            try:
+                metrics.inc("events_received_total")
+            except KeyError:
+                pass
+
     def _push(prev=None, updated=None) -> None:
         if bridge is None:
             return
@@ -81,6 +89,7 @@ def create_app(
         payload = await _read_json(request)
         if isinstance(payload, JSONResponse):
             return payload
+        _inc_received()
         try:
             ev = normalize_statusline(payload)
             updated = store.apply_event(ev)
@@ -95,6 +104,7 @@ def create_app(
         payload = await _read_json(request)
         if isinstance(payload, JSONResponse):
             return payload
+        _inc_received()
         try:
             ev = normalize_hook(payload)
             prev = store.get(ev.session_id) if ev.session_id else None
@@ -136,6 +146,7 @@ def create_app(
         body = await _read_json(request)
         if isinstance(body, JSONResponse):
             return body
+        _inc_received()
         event = body.get("event") if isinstance(body, dict) else None
         if not isinstance(event, dict):
             return _err("missing_required_field", "event required", 400)

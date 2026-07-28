@@ -26,6 +26,7 @@ from .protocol import (
 )
 
 _log = get_logger("app")
+_state_log = get_logger("state")
 
 
 class SerialBridge:
@@ -198,6 +199,15 @@ class SerialBridge:
             )
             if alert:
                 self._send(alert)
+            # 观测性：记录状态转换 + adapter 内部处理延迟（now - hook 到达时刻），
+            # 用于证明 adapter 收到 hook 后即推送、排除 adapter 侧慢（诊断 working 延迟）。
+            now_ms = int(time.time() * 1000)
+            latency = now_ms - (updated.updated_at_ms or now_ms)
+            self._observe("state_transition_latency_ms", float(latency))
+            _state_log.info(
+                "transition session=%s %s->%s latency=%dms",
+                updated.session_id, prev.state.value, updated.state.value, latency,
+            )
         self.send_full_snapshot()
 
     # ---- 心跳（§4.3）----
@@ -302,6 +312,13 @@ class SerialBridge:
         if self._metrics is not None:
             try:
                 self._metrics.set(name, value)
+            except KeyError:
+                pass
+
+    def _observe(self, name: str, value: float) -> None:
+        if self._metrics is not None:
+            try:
+                self._metrics.observe(name, value)
             except KeyError:
                 pass
 
