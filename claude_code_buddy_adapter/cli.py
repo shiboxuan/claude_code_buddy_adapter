@@ -15,6 +15,7 @@ from typing import Optional, Sequence
 
 from . import __version__
 from . import install_claude as _install
+from . import vendor as _vendor
 
 CLAUDE_DIR = Path.home() / ".claude"
 STATUSLINE_HELPER = CLAUDE_DIR / "claude-code-buddy-statusline"
@@ -204,6 +205,38 @@ def _cmd_doctor(args) -> int:
         f"{SETTINGS_JSON} 含 buddy 配置" if settings_ok else f"{SETTINGS_JSON} 未含 buddy 配置",
     ))
 
+    # statusLine 渲染器：vendor python（或开发模式 sys.executable）+ 渲染脚本能跑
+    renderer_ok = False
+    renderer_detail = ""
+    try:
+        from . import vendor as _vendor
+        import subprocess as _sp
+        vbin = _vendor._python_bin(
+            CLAUDE_DIR / _vendor.VENDOR_DIR_NAME / _vendor.VENDOR_PYTHON_DIR_NAME
+        )
+        rscript = CLAUDE_DIR / _vendor.VENDOR_DIR_NAME / _vendor.RENDER_SCRIPT_NAME
+        py = vbin if vbin.exists() else Path(sys.executable)
+        if rscript.exists() and py.exists():
+            r = _sp.run(
+                [str(py), str(rscript)],
+                input='{"model":{"display_name":"x"}}',
+                capture_output=True, text=True, encoding="utf-8", timeout=5,
+            )
+            if r.returncode == 0 and "x" in r.stdout:
+                renderer_ok = True
+                renderer_detail = f"{py.name} + render_statusline.py"
+            else:
+                renderer_detail = f"渲染执行失败 rc={r.returncode}"
+        else:
+            renderer_detail = "未就位，重跑 install-claude --write 释放"
+    except Exception as e:  # noqa: BLE001
+        renderer_detail = f"检查失败: {e}"
+    checks.append((
+        "statusline renderer",
+        "PASS" if renderer_ok else "FAIL",
+        renderer_detail,
+    ))
+
     checks.append(("firmware protocol", "SKIP", "无设备在线或留待真机联调（ADP-P9）"))
 
     for name, status, detail in checks:
@@ -213,7 +246,10 @@ def _cmd_doctor(args) -> int:
 
 # ---- install-claude ----
 def _statusline_helper_script(cdir: Path) -> str:
-    return _install.statusline_helper_script(cdir / _install.STATUSLINE_ORIG_NAME)
+    renderer_py, render_script = _vendor.renderer_paths(cdir)
+    return _install.statusline_helper_script(
+        cdir / _install.STATUSLINE_ORIG_NAME, renderer_py, render_script
+    )
 
 
 def _hook_helper_script() -> str:

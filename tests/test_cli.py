@@ -88,7 +88,7 @@ def test_install_claude_settings_fragment_valid():
 
 
 def test_install_claude_print_uses_installer_as_single_authority(monkeypatch, tmp_path):
-    monkeypatch.setattr(ic, "statusline_helper_script", lambda sidecar_path: "statusline-authority\n")
+    monkeypatch.setattr(ic, "statusline_helper_script", lambda sidecar_path, renderer_py, render_script: "statusline-authority\n")
     monkeypatch.setattr(ic, "hook_helper_script", lambda: "hook-authority\n")
     sentinel = {"statusLine": {"command": "authority"}, "hooks": {}}
     monkeypatch.setattr(ic, "settings_fragment", lambda statusline, hook: sentinel)

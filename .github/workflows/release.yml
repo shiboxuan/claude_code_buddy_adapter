@@ -78,6 +78,12 @@ jobs:
           "$VENV_PYTHON" -m pip install --upgrade pip
           "$VENV_PYTHON" -m pip install -e ".[build]"
 
+      - name: 缓存 vendor python
+        uses: actions/cache@v4
+        with:
+          path: vendor/python
+          key: vendor-python-${{ matrix.label }}-20260728-3.11.15
+
       - name: Nuitka 打包
         shell: bash
         run: PYTHON="$VENV_PYTHON" bash scripts/build.sh --output-name "${{ matrix.artifact }}"

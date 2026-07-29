@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+from . import vendor
+
 ADAPTER_HOST = "127.0.0.1"
 ADAPTER_PORT = 8765
 
@@ -186,28 +188,17 @@ def resolve_settings_path(
 
 
 # ---- helper 脚本 ----
-# statusLine 自生成行用的 python 片段（无单引号，可整体塞进 bash 单引号字符串）。
-# 从 payload 取 model.display_name 与 context_window.used_percentage，拼成 "model | ctx N%"。
-_STATUSLINE_PY = (
-    "import sys, json\n"
-    "try:\n"
-    "    d = json.load(sys.stdin)\n"
-    '    m = (d.get("model") or {}).get("display_name") or (d.get("model") or {}).get("id") or ""\n'
-    '    cw = (d.get("context_window") or {}).get("used_percentage")\n'
-    '    parts = [p for p in [m, (f"ctx {cw:g}%" if cw is not None else None)] if p]\n'
-    '    print(" | ".join(parts) if parts else "")\n'
-    "except Exception:\n"
-    "    pass\n"
-)
-
-
-def statusline_helper_script(sidecar_path: Path) -> str:
+def statusline_helper_script(
+    sidecar_path: Path, renderer_py: str, render_script: str
+) -> str:
     """statusLine helper 脚本：读 stdin -> POST adapter -> 输出 statusline 文本 -> exit 0。
 
     Claude Code 用 command 的 stdout 作为状态栏内容，故必须输出文本（否则状态栏空白）：
     - sidecar 存在且非空（被 buddy 接管的原 statusLine command）-> 把 payload 透传给原
-      command，输出其 stdout；
-    - 否则 -> 从 payload 自生成一行（``model | ctx N%``）。
+      command，输出其 stdout（原显示不丢）；
+    - 否则 -> 用工程自带 vendor python 跑 ``render_statusline.py`` 渲染彩色一行
+      （模型 / 进度条 / effort / 计费）。``renderer_py`` / ``render_script`` 由
+      :func:`vendor.resolve_renderer` 注入，正斜杠路径 win/bash 都识别，不依赖系统 python。
     POST 仍 fire-and-forget，不影响 adapter 采集。
     """
     return (
@@ -221,9 +212,7 @@ def statusline_helper_script(sidecar_path: Path) -> str:
         '  orig_cmd=$(cat "$ORIG_FILE")\n'
         "  printf '%s' \"$payload\" | sh -c \"$orig_cmd\" 2>/dev/null || true\n"
         "else\n"
-        "  printf '%s' \"$payload\" | python3 -c '\n"
-        + _STATUSLINE_PY
-        + "' 2>/dev/null || true\n"
+        f'  printf \'%s\' "$payload" | "{renderer_py}" "{render_script}" 2>/dev/null || true\n'
         "fi\n"
         "exit 0\n"
     )
@@ -247,13 +236,20 @@ def _chmod_exec(path: Path) -> None:
         pass
 
 
-def write_helpers(claude_dir: Path) -> tuple[Path, Path]:
+def write_helpers(
+    claude_dir: Path, renderer_py: str, render_script: str
+) -> tuple[Path, Path]:
     """写两个 helper 脚本到 claude_dir 并设可执行权限，返回 (statusline_path, hook_path)。"""
     claude_dir = Path(claude_dir)
     claude_dir.mkdir(parents=True, exist_ok=True)
     sl = claude_dir / STATUSLINE_HELPER_NAME
     hk = claude_dir / HOOK_HELPER_NAME
-    sl.write_text(statusline_helper_script(claude_dir / STATUSLINE_ORIG_NAME), encoding="utf-8")
+    sl.write_text(
+        statusline_helper_script(
+            claude_dir / STATUSLINE_ORIG_NAME, renderer_py, render_script
+        ),
+        encoding="utf-8",
+    )
     hk.write_text(hook_helper_script(), encoding="utf-8")
     _chmod_exec(sl)
     _chmod_exec(hk)
@@ -524,8 +520,10 @@ def apply_install(
             f"或手动合并。原文件未改动（备份: {backup_path}）。"
         )
 
-    # 冲突已排除，至此落 helper（找不到配置且无 --create 时上面已中断，不会到这里）
-    sl_path, hk_path = write_helpers(cdir)
+    # 冲突已排除，至此落 helper（找不到配置且无 --create 时上面已中断，不会到这里）。
+    # 释放 vendor python + 渲染脚本，供 statusLine 自生成分支调用（不依赖系统 python）。
+    renderer_py, render_script = vendor.resolve_renderer(cdir)
+    sl_path, hk_path = write_helpers(cdir, renderer_py, render_script)
 
     # sidecar：force 覆盖非 buddy -> 保留原 command（透传其输出）；原无 statusLine -> 清空（自生成）；
     # idempotent -> 不动（保留首次安装时记下的原 command）

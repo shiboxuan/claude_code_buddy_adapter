@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import sys
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -132,15 +134,16 @@ def test_is_buddy_command_non_match(tmp_path):
 
 # ---- write_helpers ----
 def test_write_helpers_creates_executable(tmp_path):
-    sl, hk = ic.write_helpers(tmp_path)
+    sl, hk = ic.write_helpers(tmp_path, "python3", "/r/render_statusline.py")
     assert sl.exists() and hk.exists()
-    sl_text = sl.read_text()
+    sl_text = sl.read_text(encoding="utf-8")
     assert "curl" in sl_text
-    # statusLine helper 必须输出 stdout：透传原 command + 自生成兜底
+    # statusLine helper 必须输出 stdout：透传原 command + vendor python 渲染兜底
     assert str(tmp_path / ic.STATUSLINE_ORIG_NAME) in sl_text  # 嵌入 sidecar 路径
     assert "sh -c" in sl_text  # 透传分支
-    assert "python3" in sl_text  # 自生成分支
-    assert "exit 0" in hk.read_text()
+    assert "python3" in sl_text  # renderer python（注入）
+    assert "/r/render_statusline.py" in sl_text  # 渲染脚本路径
+    assert "exit 0" in hk.read_text(encoding="utf-8")
     assert os.access(sl, os.X_OK)
     assert os.access(hk, os.X_OK)
 
@@ -410,16 +413,15 @@ def test_apply_install_settings_path_outside_claude_dir(tmp_path):
 # ---- statusLine helper stdout + sidecar ----
 def test_statusline_helper_script_contains_passthrough_and_autogen(tmp_path):
     sidecar = tmp_path / ic.STATUSLINE_ORIG_NAME
-    script = ic.statusline_helper_script(sidecar)
+    script = ic.statusline_helper_script(sidecar, "python3", "/r/render_statusline.py")
     # POST 给 adapter 仍在
     assert "/v1/claude/statusline" in script
     # 透传分支：有 sidecar 时把 payload 喂给原 command
     assert str(sidecar) in script
     assert 'sh -c "$orig_cmd"' in script
-    # 自生成分支：无 sidecar 时从 payload 解析 model/ctx
+    # 自生成分支：无 sidecar 时用 vendor python 跑渲染脚本（不再内联 python3 -c）
     assert "python3" in script
-    assert "context_window" in script
-    assert "used_percentage" in script
+    assert "/r/render_statusline.py" in script
 
 
 def test_write_statusline_orig_writes_and_clears(tmp_path):
@@ -461,6 +463,8 @@ def test_apply_install_idempotent_keeps_sidecar(tmp_path):
 
 def test_statusline_helper_passthrough_orig_stdout(tmp_path):
     """端到端：buddy helper 把 payload 透传给原 statusLine command，stdout = 原输出。"""
+    if sys.platform == "win32":
+        pytest.skip("Windows 上 orig command 路径在 bash sh -c 下转换复杂，由 macOS CI 覆盖")
     orig = tmp_path / "orig-statusline"
     orig.write_text("#!/usr/bin/env bash\necho 'ORIG-LINE'\n", encoding="utf-8")
     orig.chmod(0o755)
@@ -481,16 +485,22 @@ def test_statusline_helper_passthrough_orig_stdout(tmp_path):
 
 
 def test_statusline_helper_autogen_stdout(tmp_path):
-    """端到端：无原 statusLine 时 buddy helper 自生成 ``model | ctx N%`` 行。"""
+    """端到端：无原 statusLine 时 buddy helper 用 vendor python 渲染彩色行。"""
     sp = tmp_path / ic.SETTINGS_NAME
     sp.write_text(json.dumps({}), encoding="utf-8")
     ic.apply_install(str(tmp_path))
     assert not (tmp_path / ic.STATUSLINE_ORIG_NAME).exists()  # 走自生成
     buddy = tmp_path / ic.STATUSLINE_HELPER_NAME
-    payload = '{"model":{"display_name":"Opus 4.8"},"context_window":{"used_percentage":45.2}}'
+    payload = '{"model":{"display_name":"Opus 4.8"},"context_window":{"used_percentage":45.2},"effort":{"level":"high"},"cost":{"total_cost_usd":0.42}}'
+    # Windows 无法直接执行无扩展名 bash 脚本（WinError 193），用 bash 显式跑
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash not available")
     out = subprocess.run(
-        [str(buddy)], input=payload, capture_output=True, text=True,
+        [bash, str(buddy)], input=payload, capture_output=True, text=True, encoding="utf-8",
     )
     assert out.returncode == 0
     assert "Opus 4.8" in out.stdout
-    assert "ctx 45.2%" in out.stdout
+    assert "45.2%" in out.stdout
+    assert "high" in out.stdout
+    assert "$0.42" in out.stdout

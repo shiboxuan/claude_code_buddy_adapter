@@ -12,6 +12,9 @@ dist/
 *.bin
 *.app/
 
+# vendor python (python-build-standalone，build.sh 下载，随 onefile 内嵌)
+vendor/
+
 # test / coverage
 .pytest_cache/
 .coverage

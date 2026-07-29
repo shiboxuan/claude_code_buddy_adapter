@@ -26,6 +26,11 @@ ENTRY="run.py"
 OUTPUT_NAME="buddy-adapter"
 OUTPUT_DIR="dist"
 
+# vendor python（python-build-standalone）：随 onefile 内嵌，install-claude 时释放到
+# ~/.claude/vendor/，statusLine helper 调用它跑渲染脚本，不依赖系统 python。
+PBS_TAG="${PBS_TAG:-20260728}"
+PBS_PY_VER="${PBS_PY_VER:-3.11.15}"
+
 usage() {
   cat <<EOF
 用法: $0 [选项]
@@ -75,6 +80,61 @@ if [[ "$(uname)" == "Darwin" ]]; then
   fi
 fi
 
+# ---- vendor python：下载 python-build-standalone 到 vendor/python（statusLine 渲染用）----
+detect_pbs_target() {
+  local os arch
+  os="$(uname -s)"; arch="$(uname -m)"
+  case "$os" in
+    MINGW*|MSYS*|CYGWIN*) echo "x86_64-pc-windows-msvc" ;;
+    Darwin)
+      case "$arch" in
+        arm64|aarch64) echo "aarch64-apple-darwin" ;;
+        x86_64) echo "x86_64-apple-darwin" ;;
+        *) echo "错误: 不支持的 mac 架构 $arch" >&2; return 1 ;;
+      esac ;;
+    Linux)
+      case "$arch" in
+        x86_64|amd64) echo "x86_64-unknown-linux-gnu" ;;
+        aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
+        *) echo "错误: 不支持的 linux 架构 $arch" >&2; return 1 ;;
+      esac ;;
+    *) echo "错误: 不支持的平台 $os" >&2; return 1 ;;
+  esac
+}
+
+ensure_vendor_python() {
+  local target fname url vdir vzip tmp
+  target="$(detect_pbs_target)" || exit 1
+  fname="cpython-${PBS_PY_VER}+${PBS_TAG}-${target}-install_only.tar.gz"
+  url="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/${fname}"
+  vdir="$ROOT_DIR/vendor/python"
+  vzip="$ROOT_DIR/vendor/python.zip"
+  if [ -f "$vzip" ]; then
+    echo "==> vendor python zip 已就位: $vzip（删除可强制重下）"
+    return 0
+  fi
+  echo "==> 下载 vendor python: $fname"
+  rm -rf "$ROOT_DIR/vendor"
+  mkdir -p "$ROOT_DIR/vendor"
+  tmp="$(mktemp -d)"
+  if ! curl -sL --fail -o "$tmp/$fname" "$url"; then
+    echo "错误: 下载 vendor python 失败: $url" >&2
+    echo "  可用 PBS_TAG / PBS_PY_VER 环境变量覆盖版本。" >&2
+    rm -rf "$tmp"; exit 1
+  fi
+  tar -xzf "$tmp/$fname" -C "$ROOT_DIR/vendor"
+  rm -rf "$tmp"
+  if [ ! -d "$vdir" ]; then
+    echo "错误: 解压后未找到 $vdir" >&2; exit 1
+  fi
+  # 打成 zip 作为单文件数据打包（--include-data-files），避免 --include-data-dir 在
+  # onefile 下丢失 python.exe（nuitka 对数据目录里的 .exe 处理异常）
+  "$PY" -c "import shutil; shutil.make_archive('vendor/python', 'zip', 'vendor', 'python')"
+  echo "==> vendor python zip: $(du -sh "$vzip" | awk '{print $1}')"
+}
+
+ensure_vendor_python
+
 # ---- 清理旧产物 ----
 rm -rf "$OUTPUT_DIR" "${ENTRY%.py}.build" "${OUTPUT_NAME}.build" "${OUTPUT_NAME}.dist"
 
@@ -95,10 +155,18 @@ NUITKA_ARGS=(
   --include-package=sniffio         # anyio 惰性 import，follow-imports 静态扫描扫不到
   --include-package=serial          # pyserial 的真实导入包名
   # anyio/h11/idna 等纯静态传递依赖由 --follow-imports 自动编入，无需显式 include。
+  # vendor python（打成 zip 内嵌）+ 渲染脚本随 onefile 分发：install-claude 释放到
+  # ~/.claude/vendor/，statusLine helper 调 vendor python 跑渲染脚本，不依赖系统 python。
+  # 用 zip 单文件数据而非 --include-data-dir：onefile 下数据目录里的 python.exe 会被
+  # nuitka 异常排除，zip 内的二进制不受影响。
+  --include-data-files="$ROOT_DIR/vendor/python.zip"=vendor/python.zip
+  --include-data-file="$ROOT_DIR/claude_code_buddy_adapter/statusline_render.py"=claude_code_buddy_adapter/statusline_render.py
 )
 
 if [[ "$MODE" == "onefile" ]]; then
   NUITKA_ARGS+=(--onefile)
+  # 固定 onefile 解压目录到缓存，避免每次启动重新解压 vendor python（~30MB）
+  NUITKA_ARGS+=('--onefile-tempdir-spec={CACHE_DIR}/claude-code-buddy-adapter')
 else
   NUITKA_ARGS+=(--standalone)
 fi

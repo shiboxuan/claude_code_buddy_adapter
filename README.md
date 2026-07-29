@@ -300,13 +300,13 @@ launchctl bootout "gui/$(id -u)" \
 
 Claude Code 仅允许配置一个 `statusLine`，且会用该 command 的 **stdout 作为状态栏内容**（一旦配置即替换内置默认状态栏）。buddy 必须接管它来采集 `model` / `context_window` / `cost` 等 hooks 拿不到的数据；但 helper 不会让状态栏空白--它在 POST 给 adapter 的同时，把文本输出到 stdout：
 
-- **没有原 statusLine**：helper 从 payload 自生成一行，形如 `Opus 4.8 | ctx 45%`。
+- **没有原 statusLine**：helper 用工程自带的 vendor python（python-build-standalone，随 buddy-adapter 打包内嵌、`install-claude` 时释放到 `~/.claude/vendor/`）跑渲染脚本，输出彩色一行，形如 `Opus 4.8 ▕████░░░░▕ 35% ⚡ high $0.42`（模型 / 彩色进度条 / effort / 计费；字段缺失则省略对应段）。
 - **已有自定义 statusLine**（如 ccusage 等）：`install-claude --write` 会检测到冲突并中断，提示加 `--force-statusline`。加该参数后，原 command 会被写入 sidecar 文件 `~/.claude/.claude-code-buddy-statusline.orig`，helper 在 POST 之后把 payload 透传给原 command 并输出其 stdout，**原有状态栏显示完整保留**。
 - **重复 `--write`**（已是 buddy statusLine）：幂等，不重复添加；sidecar 保持不动，继续透传首次记下的原 command。
 
 > 若你曾用旧版 `--force-statusline` 安装过、原 statusLine 已被丢弃：新版无法凭空恢复，需手动把原 command 填回 `settings.json` 的 `statusLine.command`，再 `--force-statusline` 重装，新版会把它存进 sidecar 透传。
 
-自生成分支依赖 `python3`；环境无 `python3` 时该分支输出空（透传分支不受影响）。helper 的 POST 始终 fire-and-forget 且 `exit 0`，不影响 adapter 采集，也不会被 Claude Code 判定为 hook 失败。
+自生成分支不依赖系统 python--用 `install-claude` 释放的 vendor python（Windows 上也不受 Microsoft Store `python3` stub 影响）；开发模式（`pip install -e`）下回退 `sys.executable`。helper 的 POST 始终 fire-and-forget 且 `exit 0`，不影响 adapter 采集，也不会被 Claude Code 判定为 hook 失败。
 
 ## 测试
 
@@ -331,6 +331,8 @@ pip install -e ".[build]"
 # 3. 验证
 ./dist/buddy-adapter --version
 ```
+
+`build.sh` 会自动下载对应平台的 [python-build-standalone](https://github.com/astral-sh/python-build-standalone) 到 `vendor/python/` 并随 onefile 内嵌；`install-claude --write` 时释放到 `~/.claude/vendor/`，statusLine helper 调用它跑渲染脚本，**不依赖用户系统是否装了 Python**（Windows 上也不受 Microsoft Store `python3` stub 影响）。版本可用 `PBS_TAG` / `PBS_PY_VER` 环境变量覆盖。
 
 **架构说明（重要）**：Nuitka 不支持交叉编译，本脚本做的是**本机架构构建**--在 x86_64 机器上产出 x86_64 包，在 arm64 机器上产出 arm64 包。要给 Apple Silicon (arm64) 用户出包，必须在 arm64 环境跑同一脚本：
 
